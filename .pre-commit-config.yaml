@@ -21,4 +21,4 @@ repos:
         language: script
         files: ""
         always_run: true
-        stages: [commit]
+        stages: [pre-commit]
