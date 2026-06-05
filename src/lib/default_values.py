@@ -12,8 +12,8 @@ def get_default_p(K: np.ndarray, y: np.ndarray) -> Callable:
     return lambda u: -np.matmul(np.transpose(K), np.matmul(K, u) - y)
 
 
-def get_default_g(alpha: float) -> Callable:
-    return lambda u: alpha * np.linalg.norm(u, ord=1)
+def get_default_g(beta: float) -> Callable:
+    return lambda u: beta * np.linalg.norm(u, ord=1)
 
 
 def get_default_hessian(K: np.ndarray) -> np.ndarray:

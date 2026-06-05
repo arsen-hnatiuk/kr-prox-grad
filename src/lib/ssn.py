@@ -12,7 +12,7 @@ class SSN:
     def __init__(
         self,
         K: np.ndarray,
-        alpha: float,
+        beta: float,
         target: np.ndarray,
         M: float,
         mode: str = "unconstrained",
@@ -22,8 +22,8 @@ class SSN:
         if all(self.K.shape):
             self.machine_precision = 1e-12
             self.target = target
-            self.alpha = alpha
-            self.g = get_default_g(self.alpha)
+            self.beta = beta
+            self.g = get_default_g(self.beta)
             self.f = get_default_f(self.K, self.target)
             self.p = get_default_p(self.K, self.target)  # -f'
             self.hessian = get_default_hessian(self.K)
@@ -43,29 +43,31 @@ class SSN:
         # sup_v <p(u),v-u>+g(u)-g(v)
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = max(0, self.M * (np.max(np.absolute(p)) - self.alpha))
+        variable_part = max(0, self.M * (np.max(np.absolute(p)) - self.beta))
         return constant_part + variable_part
 
     def Psi_positive(self, u: np.ndarray) -> np.ndarray:
         # sup_v <p(u),v-u>+g(u)-g(v)
         p = self.p(u)
         constant_part = -np.matmul(p, u) + self.g(u)
-        variable_part = max(0, self.M * (np.max(p) - self.alpha))
+        variable_part = max(0, self.M * (np.max(p) - self.beta))
         return constant_part + variable_part
 
     def prox_unconstrained(self, q: np.ndarray, c: float = 1) -> np.ndarray:
-        return np.sign(q) * np.maximum(np.abs(q) - self.alpha / c, 0)
+        return np.sign(q) * np.maximum(np.abs(q) - self.beta / c, 0)
 
     def prox_positive(self, q: np.ndarray, c: float = 1) -> np.ndarray:
-        return np.sign(q) * np.maximum(q - self.alpha / c, 0)
+        return np.sign(q) * np.maximum(q - self.beta / c, 0)
 
     def grad_prox_unconstrained(self, q: np.ndarray, c: float = 1) -> np.ndarray:
-        return np.diag(np.where(np.abs(q) > self.alpha / c, 1, 0))
+        return np.diag(np.where(np.abs(q) > self.beta / c, 1, 0))
 
     def grad_prox_positive(self, q: np.ndarray, c: float = 1) -> np.ndarray:
-        return np.diag(np.where(q > self.alpha / c, 1, 0))
+        return np.diag(np.where(q > self.beta / c, 1, 0))
 
-    def solve(self, tol: float, u_0: np.ndarray, do_logging: bool = True) -> np.ndarray:
+    def solve(
+        self, tol: float, u_0: np.ndarray, log_results: bool = True
+    ) -> np.ndarray:
         # Semismooth Newton method (globalized via line search)
         if not all(self.K.shape):
             logging.debug("Empty input space, retuning u_0")
@@ -110,7 +112,7 @@ class SSN:
             psi_val = self.Psi(prox_q)
             k += 1
 
-        if do_logging:
+        if log_results:
             logging.info(
                 f"SSN in {len(prox_q)} dimensions converged in {k} iterations to tolerance {tol:.3E}"
             )
