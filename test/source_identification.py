@@ -13,7 +13,7 @@ if src_path not in sys.path:
     sys.path.append(str(src_path))
 from lib.measure import Measure
 from kr_prox_grad import KR_PROX_GRAD
-from pdap import PDAP
+from frank_wolfe import FRANK_WOLFE
 
 results_dir = Path("results/source_identification")
 
@@ -104,29 +104,23 @@ def experiment():
     exp_kr_prox_grad = KR_PROX_GRAD(
         j=j, p=p, beta=beta, domain=discretization_domain, L=L
     )
-    exp_pdap = PDAP(K_transpose=kernel(discretization_domain), beta=beta, target=target)
+    exp_frank_wolfe = FRANK_WOLFE(
+        K_transpose=kernel(discretization_domain), beta=beta, target=target
+    )
 
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_time=60, log_results=False
+        max_iter=1000, max_time=1000, log_results=True
     )
 
     # PDAP
     logging.info(f"Computing PDAP solution")
-    u_pdap, objective_values_pdap, times_pdap, supports_pdap = exp_pdap.solve_exact(
-        tol=1e-12, log_results=False
+    u_pdap, objective_values_pdap, times_pdap, supports_pdap = (
+        exp_frank_wolfe.solve_exact(tol=1e-12, log_results=False)
     )
 
-    optimum = (
-        min(
-            [
-                objective_values_pdap[-1],
-                objective_values_kr[-1],
-            ]
-        )
-        - 1e-13
-    )
+    optimum = objective_values_pdap[-1]
 
     residuals_pdap = np.array(objective_values_pdap) - optimum
     residuals_kr_prox_grad = np.array(objective_values_kr) - optimum

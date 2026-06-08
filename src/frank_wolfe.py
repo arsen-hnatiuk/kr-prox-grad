@@ -10,7 +10,7 @@ logging.basicConfig(
 )
 
 
-class PDAP:
+class FRANK_WOLFE:
     # An implementation of the LGCG algorithm for finite Omega
 
     def __init__(

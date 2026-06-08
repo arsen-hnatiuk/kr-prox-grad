@@ -25,13 +25,17 @@ class KR_PROX_GRAD:
         self.beta = beta
         self.domain = domain
         self.L = L
+        self.L_max = L
+        self.L_reduce_factor = 0.75
+        self.L_increase_factor = 2
 
     def compute_alphas_supports_y(self, y: np.array, varphi: np.array) -> dict:
         supports_dict = {}
         distances = np.linalg.norm(self.domain - y, axis=1).flatten()
         alpha = -np.min(varphi)
         o_j = varphi + alpha * distances
-        support_indices = np.where(o_j == np.min(o_j))[0]
+        O_j = np.min(o_j)
+        support_indices = np.where(o_j == O_j)[0]
         while True:
             # Compute the support on (alpha, alpha_+)
             support_distances = distances[support_indices].flatten()
@@ -71,6 +75,8 @@ class KR_PROX_GRAD:
                 (intermediate_support_indices, new_support_indices)
             )
             alpha = np.min(intersection_vector)  # alpha_+
+
+            # Compute alpha where O_j changes and add to dict like others
         return supports_dict
 
     def compute_alphas_supports(self, u: Measure, varphi: np.ndarray) -> list:
@@ -179,7 +185,7 @@ class KR_PROX_GRAD:
             constraints,
         )
         try:
-            problem.solve()
+            problem.solve(eps_rel=1e-10)
         except cp.error.DCPError:
             logging.info(min_varphi)
             logging.info(varphi_vector)
@@ -188,6 +194,10 @@ class KR_PROX_GRAD:
             logging.info(sum_constraint)
             problem.solve(verbose=True)
         solution = Lambda.value
+        solution[solution < 1e-8] = 0
+        # if log_results:
+        #     logging.info(x_bar)
+        #     logging.info(solution[-1])
 
         # Reconstruct KR norm from solution
         kr_norm = distance_vector @ solution + u_norm
@@ -207,17 +217,22 @@ class KR_PROX_GRAD:
 
     def kr_step(
         self, u: Measure, p_u: Callable, varphi: np.array, log_results: bool
-    ) -> Measure:
+    ) -> tuple:
+        descent_condition = True
         if not len(u.coefficients):
             # Reference measure is null
             position = np.argmin(varphi)
             coef = -varphi[position] / self.L
-            return Measure(support=[self.domain[position]], coefficients=[coef])
+            return (
+                Measure(support=[self.domain[position]], coefficients=[coef]),
+                descent_condition,
+            )
         else:
             alphas, all_supports_dict = self.compute_alphas_supports(u, varphi)
             alphas = np.append(alphas, np.inf)
-            if log_results:
-                logging.info(f"alphas: {alphas}")
+            # if log_results:
+            #     logging.info(f"alphas: {alphas}")
+            found_us = []
             for i, alpha in enumerate(alphas[:-1]):
                 # Loop over the alphas in increasing order to find solution
                 for alpha_lower, alpha_upper in [
@@ -253,44 +268,66 @@ class KR_PROX_GRAD:
                             "distances": incumbent_distances,
                         }
 
-                    # logging.info(supports_per_j)
                     if not self.screen_alpha(
                         u, varphi, (alpha_lower, alpha_upper), supports_per_j
                     ):
-                        if log_results:
-                            logging.info("alpha failed screening")
+                        # if log_results:
+                        #     logging.info(
+                        #         f"alphas {(alpha_lower, alpha_upper)} failed screening"
+                        #     )
                         continue
 
-                    u_plus, kr_norm = self.quadratic_problem(u, varphi, supports_per_j)
-                    if log_results:
-                        logging.info(
-                            f"({alpha_lower/self.L}, {alpha_upper/self.L}): {kr_norm}"
-                        )
+                    # if log_results:
+                    #     logging.info("-" * 50)
+                    #     logging.info(f"alpha_lower: {alpha_lower}")
+                    #     logging.info(f"alpha_upper: {alpha_upper}")
+                    #     for j, d in supports_per_j.items():
+                    #         logging.info(j)
+                    #         distances = d["distances"]
+                    #         support_indices = d["support_indices"]
+                    #         for dist, ind in zip(distances, support_indices):
+                    #             logging.info(
+                    #                 f"lower O_j: {varphi[ind] + alpha_lower*dist}"
+                    #             )
+                    #             logging.info(
+                    #                 f"upper O_j: {varphi[ind] + alpha_upper*dist}"
+                    #             )
+
+                    u_plus, kr_norm = self.quadratic_problem(
+                        u, varphi, supports_per_j, log_results=log_results
+                    )
+                    found_us.append(u_plus.copy())
+                    # if log_results:
+                    #     logging.info(
+                    #         f"({alpha_lower/self.L}, {alpha_upper/self.L}): {kr_norm}"
+                    #     )
                     if (
                         alpha_lower / self.L - 1e-6 <= kr_norm
                         and alpha_upper / self.L + 1e-6 >= kr_norm
                     ):
                         # Check KR descent:
                         diff = self.j(u_plus) - self.j(u)
-                        rk_rhs = (
+                        kr_rhs = (
                             -u_plus.duality_pairing(p_u)
                             + self.beta * np.linalg.norm(u.coefficients, ord=1)
                             + u.duality_pairing(p_u)
                             - self.beta * np.linalg.norm(u.coefficients, ord=1)
                             + 0.5 * self.L * kr_norm**2
                         )
-                        if log_results:
-                            logging.info(
-                                f"KR Descent condition satisfied: {diff<= rk_rhs}"
-                            )
-                        return u_plus
-        logging.warning("NO KR SOLUTION FOUND")
-        return u_plus
+                        if log_results and diff > kr_rhs:
+                            logging.warning(f"KR Descent condition failed")
+                            descent_condition = False
+                        return u_plus, descent_condition
+        if log_results:
+            logging.warning("No KR solution found")
+        us_values = [self.j(u_) for u_ in found_us]
+        return found_us[np.argmin(us_values)], descent_condition
 
     def solve(
         self,
         u_0: Measure = Measure(),
         max_time: float = 60.0,
+        max_iter: int = 250,
         log_results: bool = True,
     ) -> tuple:
         u = u_0
@@ -299,13 +336,20 @@ class KR_PROX_GRAD:
         objectives = [self.j(u)]
         initial_time = time.perf_counter()
         k = 1
-        while time.perf_counter() - initial_time < max_time:
+        while time.perf_counter() - initial_time < max_time and k <= max_iter:
             p_u = self.p(u)
             varphi = -p_u(self.domain) + self.beta
             if np.min(varphi) >= 0:
                 # Reached optimality
                 break
-            u = self.kr_step(u, p_u, varphi, log_results)
+
+            u, descent_condition = self.kr_step(u, p_u, varphi, log_results)
+            # self.L = max(self.L * self.L_reduce_factor, 250)
+            # descent_condition = False
+            # while not descent_condition:
+            #     u, descent_condition = self.kr_step(u, p_u, varphi, log_results)
+            #     if not descent_condition:
+            #         self.L = min(self.L * self.L_increase_factor, self.L_max)
 
             # update metrics
             times.append(time.perf_counter() - initial_time)
@@ -314,7 +358,7 @@ class KR_PROX_GRAD:
 
             if log_results:
                 logging.info(
-                    f"{k}: support {supports[-1]}, objective: {objectives[-1]:.12E}"
+                    f"{k}: L:{self.L:.3E}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
                 )
             k += 1
         logging.info(
