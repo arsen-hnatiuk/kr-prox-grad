@@ -111,8 +111,34 @@ def experiment():
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=1000, max_time=1000, log_results=True
+        max_iter=250, max_time=1000, log_results=True
     )
+    # logging.info(u_kr.coefficients)
+    # for sup, coef in zip(u_kr.support, u_kr.coefficients):
+    #     if np.min(np.linalg.norm(true_sources - sup, axis=1))>0.1:
+    #         logging.info(f"point: {sup}, coef: {coef}")
+    # p_u = p(u_kr)
+    # P = lambda x: np.abs(p_u(x))
+    # B, D = np.meshgrid(
+    #             *(np.linspace(bound[0], bound[1], discretization_resolution + 2)[1:-1] for bound in Omega)
+    #         )
+    # vals = np.array(
+    #     [P(np.array([x_1, x_2])) for x_1, x_2 in zip(B.flatten(), D.flatten())]
+    # ).reshape((100, 100))
+    # plt.contourf(B, D, vals, levels=100)
+    # plt.colorbar()
+    # for i, x in enumerate(true_sources):
+    #     if i:
+    #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+    #     else:
+    #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+    # for i, x in enumerate(u_kr.support):
+    #     if i:
+    #         plt.plot([x[0]], [x[1]], "o", c="b")
+    #     else:
+    #         plt.plot([x[0]], [x[1]], "o", c="b", label="Predicted support")
+    # plt.legend()
+    # plt.show()
 
     # PDAP
     logging.info(f"Computing PDAP solution")

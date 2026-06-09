@@ -33,6 +33,7 @@ class KR_PROX_GRAD:
         supports_dict = {}
         distances = np.linalg.norm(self.domain - y, axis=1).flatten()
         alpha = -np.min(varphi)
+        alpha_plus = alpha
         o_j = varphi + alpha * distances
         O_j = np.min(o_j)
         support_indices = np.where(o_j == O_j)[0]
@@ -45,18 +46,36 @@ class KR_PROX_GRAD:
             intermediate_support_distances = distances[
                 intermediate_support_indices
             ].flatten()
-            supports_dict[alpha] = {
+            reference_index = intermediate_support_indices[0]
+            supports_dict[alpha_plus] = {
                 "support_indices": support_indices,
                 "support_distances": support_distances,
                 "intermediate_support_indices": intermediate_support_indices,
                 "intermediate_support_distances": intermediate_support_distances,
             }
+
+            # # Check if O_j intersects with alpha
+            # if alpha == alpha_plus:
+            #     pass
+            # else:
+            #     O_j_lower = varphi[reference_index] + alpha*distances[reference_index]
+            #     O_j_upper = varphi[reference_index] + alpha_plus*distances[reference_index]
+            #     if (O_j_lower < alpha and O_j_upper > alpha_plus) or (O_j_lower > alpha and O_j_upper < alpha_plus):
+            #         O_j_alpha = varphi[reference_index] / (1-distances[reference_index])
+            #         supports_dict[O_j_alpha] = {
+            #             "support_indices": intermediate_support_distances,
+            #             "support_distances": intermediate_support_distances,
+            #             "intermediate_support_indices": intermediate_support_indices,
+            #             "intermediate_support_distances": intermediate_support_distances,
+            #         } # Add alpha where O_j-alpha changes signs
+
+            alpha = alpha_plus
             if len(intermediate_support_indices) == 1 and np.array_equal(
                 self.domain[intermediate_support_indices[0]], y
             ):
                 break
+
             # Determine alpha_+ and which points enter the support at alpha_+
-            reference_index = intermediate_support_indices[0]
             np.seterr(divide="ignore", invalid="ignore")
             intersection_vector = (varphi[reference_index] - varphi) / (
                 distances - distances[reference_index]
@@ -74,9 +93,7 @@ class KR_PROX_GRAD:
             support_indices = np.hstack(
                 (intermediate_support_indices, new_support_indices)
             )
-            alpha = np.min(intersection_vector)  # alpha_+
-
-            # Compute alpha where O_j changes and add to dict like others
+            alpha_plus = np.min(intersection_vector)  # alpha_+
         return supports_dict
 
     def compute_alphas_supports(self, u: Measure, varphi: np.ndarray) -> list:
@@ -105,6 +122,7 @@ class KR_PROX_GRAD:
         else:
             upper_bound = np.linalg.norm(u.coefficients, ord=1)
         for j, inner_dict in supports_per_j.items():
+            suport_indices = inner_dict["support_indices"]
             distances = inner_dict["distances"].copy()
             min_distance = np.min(distances)
             lower_bound += u.coefficients[j] * min((min_distance - 1), 0)
@@ -194,10 +212,32 @@ class KR_PROX_GRAD:
             logging.info(sum_constraint)
             problem.solve(verbose=True)
         solution = Lambda.value
-        solution[solution < 1e-8] = 0
+        # solution[solution < 0] = 0
         # if log_results:
         #     logging.info(x_bar)
         #     logging.info(solution[-1])
+
+        # Check number of transported points
+        number_transported_points = 0
+        for j, inner_support_indices in support_indices_per_j.items():
+            transport_vector = []
+            for ell in range(total_support_size):
+                transport_vector.append(solution[ell * len(u.coefficients) + j])
+            transport_vector = np.array(transport_vector)
+            transport_mass = np.sum(transport_vector)
+            j_point = u.support[j]
+            j_index_global = np.where(
+                np.linalg.norm(self.domain - j_point, axis=1) == 0
+            )[0][0]
+            j_index_local = np.where(total_support_indices == j_index_global)[0]
+            if len(j_index_local):
+                reference_vector = (
+                    transport_mass * np.eye(1, total_support_size, j_index_local[0])[0]
+                )
+            else:
+                reference_vector = np.zeros(total_support_size)
+            transport_difference = transport_vector - reference_vector
+            number_transported_points += np.sum(transport_difference != 0)
 
         # Reconstruct KR norm from solution
         kr_norm = distance_vector @ solution + u_norm
@@ -213,7 +253,7 @@ class KR_PROX_GRAD:
                         coefficients=[coef],
                     )
 
-        return u_plus, kr_norm
+        return u_plus, kr_norm, number_transported_points
 
     def kr_step(
         self, u: Measure, p_u: Callable, varphi: np.array, log_results: bool
@@ -226,6 +266,7 @@ class KR_PROX_GRAD:
             return (
                 Measure(support=[self.domain[position]], coefficients=[coef]),
                 descent_condition,
+                0,
             )
         else:
             alphas, all_supports_dict = self.compute_alphas_supports(u, varphi)
@@ -277,23 +318,7 @@ class KR_PROX_GRAD:
                         #     )
                         continue
 
-                    # if log_results:
-                    #     logging.info("-" * 50)
-                    #     logging.info(f"alpha_lower: {alpha_lower}")
-                    #     logging.info(f"alpha_upper: {alpha_upper}")
-                    #     for j, d in supports_per_j.items():
-                    #         logging.info(j)
-                    #         distances = d["distances"]
-                    #         support_indices = d["support_indices"]
-                    #         for dist, ind in zip(distances, support_indices):
-                    #             logging.info(
-                    #                 f"lower O_j: {varphi[ind] + alpha_lower*dist}"
-                    #             )
-                    #             logging.info(
-                    #                 f"upper O_j: {varphi[ind] + alpha_upper*dist}"
-                    #             )
-
-                    u_plus, kr_norm = self.quadratic_problem(
+                    u_plus, kr_norm, number_transported_points = self.quadratic_problem(
                         u, varphi, supports_per_j, log_results=log_results
                     )
                     found_us.append(u_plus.copy())
@@ -317,11 +342,15 @@ class KR_PROX_GRAD:
                         if log_results and diff > kr_rhs:
                             logging.warning(f"KR Descent condition failed")
                             descent_condition = False
-                        return u_plus, descent_condition
+                        return u_plus, descent_condition, number_transported_points
         if log_results:
             logging.warning("No KR solution found")
         us_values = [self.j(u_) for u_ in found_us]
-        return found_us[np.argmin(us_values)], descent_condition
+        return (
+            found_us[np.argmin(us_values)],
+            descent_condition,
+            number_transported_points,
+        )
 
     def solve(
         self,
@@ -337,19 +366,28 @@ class KR_PROX_GRAD:
         initial_time = time.perf_counter()
         k = 1
         while time.perf_counter() - initial_time < max_time and k <= max_iter:
+            old_support = u.support.copy()
             p_u = self.p(u)
             varphi = -p_u(self.domain) + self.beta
             if np.min(varphi) >= 0:
                 # Reached optimality
                 break
 
-            u, descent_condition = self.kr_step(u, p_u, varphi, log_results)
+            u, descent_condition, number_transported_points = self.kr_step(
+                u, p_u, varphi, log_results
+            )
             # self.L = max(self.L * self.L_reduce_factor, 250)
             # descent_condition = False
             # while not descent_condition:
             #     u, descent_condition = self.kr_step(u, p_u, varphi, log_results)
             #     if not descent_condition:
             #         self.L = min(self.L * self.L_increase_factor, self.L_max)
+
+            # new_support = u.support.copy()
+            # for point in new_support:
+            #     if len(old_support):
+            #         if np.min(np.linalg.norm(old_support-point, axis=1))>0:
+            #             logging.info(point)
 
             # update metrics
             times.append(time.perf_counter() - initial_time)
@@ -358,7 +396,7 @@ class KR_PROX_GRAD:
 
             if log_results:
                 logging.info(
-                    f"{k}: L:{self.L:.3E}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
+                    f"{k}: L:{self.L:.3E}, transported points: {number_transported_points}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
                 )
             k += 1
         logging.info(
