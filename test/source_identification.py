@@ -111,7 +111,7 @@ def experiment():
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=250, max_time=1000, log_results=True
+        max_iter=1000, max_time=1000, log_results=True
     )
     # logging.info(u_kr.coefficients)
     # for sup, coef in zip(u_kr.support, u_kr.coefficients):
