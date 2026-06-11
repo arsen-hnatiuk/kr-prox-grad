@@ -3,6 +3,8 @@ import logging
 import time
 import cvxpy as cp
 from typing import Callable
+from itertools import combinations
+import matplotlib.pyplot as plt
 from lib.measure import Measure
 
 logging.basicConfig(
@@ -25,13 +27,14 @@ class KR_PROX_GRAD:
         self.beta = beta
         self.domain = domain
         self.L = L
-        self.L_max = 2 * L
+        self.L_max = L
         self.L_min = 1
-        self.L_reduce_factor = 0.75
-        self.L_increase_factor = 2
+        self.L_reduce_factor = 0.9
+        self.L_increase_factor = 1.5
         self.wasserstein_weight = 1
 
     def compute_alphas_supports_y(self, y: np.array, varphi: np.array) -> dict:
+        tol = 1e-10
         supports_dict = {}
         distances = np.linalg.norm(self.domain - y, axis=1).flatten()
         alpha = -np.min(varphi)
@@ -85,15 +88,10 @@ class KR_PROX_GRAD:
             O_j_upper = (
                 varphi[reference_index] + alpha_plus * distances[reference_index]
             )
-            # logging.info(
-            #     f"alpha: {alpha}, alpha+: {alpha_plus}, O-: {O_j_lower}, O+:{O_j_upper}"
-            # )
             if (O_j_lower < alpha and O_j_upper > alpha_plus) or (
                 O_j_lower > alpha and O_j_upper < alpha_plus
             ):
                 O_j_alpha = varphi[reference_index] / (1 - distances[reference_index])
-                # logging.info("FOUND OJOJOJOJO")
-                # logging.info(O_j_alpha)
                 supports_dict[O_j_alpha] = {
                     "support_indices": intermediate_support_indices,
                     "support_distances": intermediate_support_distances,
@@ -101,7 +99,217 @@ class KR_PROX_GRAD:
                     "intermediate_support_distances": intermediate_support_distances,
                 }  # Add alpha where O_j-alpha changes signs
             alpha = alpha_plus
+
+        all_alphas = np.array(supports_dict.keys())
+
+        # Perform checks
+        # Check breakpoints
+        breakpoints = set()
+        for i, j in combinations(range(len(self.domain)), 2):
+            if abs(distances[i] - distances[j]) < tol:
+                continue
+            alpha = (varphi[j] - varphi[i]) / (distances[i] - distances[j])
+            if alpha >= -np.min(varphi) - tol:
+                breakpoints.add(alpha)
+        breakpoints = sorted(breakpoints)
+        for breakpoint in breakpoints:
+            if breakpoint not in all_alphas:
+                logging.warning(f"{j}: breakpoint {breakpoint} not found")
+
+        # Check sign changes
+        sign_changes = []
+        extended = [-np.min(varphi)] + breakpoints + [np.inf]
+        for k in range(len(extended) - 1):
+            a = extended[k]
+            b = extended[k + 1]
+            # choose probe in the interval
+            if np.isinf(b):
+                probe = a + 1.0
+            else:
+                probe = 0.5 * (a + b)
+            active = np.argmin(varphi + distances * probe)
+            intercept = varphi[active]
+            slope = distances[active] - 1.0
+            # g(alpha)=intercept+slope*alpha
+            if abs(slope) > tol:
+                root = -intercept / slope
+                inside = root > a + tol and (np.isinf(b) or root < b - tol)
+                if inside:
+                    sign_changes.append(root)
+        for sign_change in sign_changes:
+            if sign_change not in all_alphas:
+                logging.warning(f"{j}: sign change {sign_change} not found")
+
         return supports_dict
+
+    def envelope_analysis(self, points, phi, y, tol=1e-10):
+        """
+        Parameters
+        ----------
+        points : (n,2) array-like
+            Elements of D.
+        phi : array-like length n
+            Values varphi(x).
+        y_index : int
+            Index of y in points.
+        alpha_min : float or None
+            Starting alpha. If None, uses -min(phi).
+
+        Returns
+        -------
+        dict with:
+            breakpoints
+            intervals
+            argmin_changes
+            sign_changes
+        """
+
+        points = self.domain
+        phi = self.varphi
+
+        n = len(points)
+
+        alpha_min = -np.min(phi)
+
+        # slopes d_x = |x-y|
+        d = np.linalg.norm(points - y, axis=1)
+
+        # ------------------------------------------------------------
+        # Step 1: all pairwise intersections of lines
+        # f_i(alpha)=phi_i+d_i*alpha
+        # ------------------------------------------------------------
+        breakpoints = set()
+
+        for i, j in combinations(range(n), 2):
+            if abs(d[i] - d[j]) < tol:
+                continue
+
+            alpha = (phi[j] - phi[i]) / (d[i] - d[j])
+
+            if alpha >= alpha_min - tol:
+                breakpoints.add(alpha)
+
+        breakpoints = sorted(breakpoints)
+
+        # ------------------------------------------------------------
+        # Step 2: determine active minimizer(s) on each interval
+        # ------------------------------------------------------------
+        cuts = [alpha_min] + breakpoints
+        intervals = []
+
+        for k in range(len(cuts)):
+            left = cuts[k]
+
+            if k < len(breakpoints):
+                right = breakpoints[k]
+                probe = (left + right) / 2
+            else:
+                # last interval [last_breakpoint, +inf)
+                probe = left + 1.0
+
+            values = phi + d * probe
+            m = np.min(values)
+
+            active = tuple(np.where(np.abs(values - m) < tol)[0])
+
+            intervals.append(
+                {
+                    "alpha_left": left,
+                    "alpha_right": (breakpoints[k] if k < len(breakpoints) else np.inf),
+                    "argmin": active,
+                }
+            )
+
+        # ------------------------------------------------------------
+        # Step 3: identify actual argmin changes at breakpoints
+        # ------------------------------------------------------------
+        argmin_changes = []
+
+        for bp in breakpoints:
+            eps = max(1e-8, 1e-8 * max(1.0, abs(bp)))
+
+            left_probe = max(alpha_min, bp - eps)
+            right_probe = bp + eps
+
+            left_active = np.argmin(phi + d * left_probe)
+            right_active = np.argmin(phi + d * right_probe)
+
+            if left_active != right_active:
+                argmin_changes.append(
+                    {
+                        "alpha": bp,
+                        "from": int(left_active),
+                        "to": int(right_active),
+                    }
+                )
+
+        # ------------------------------------------------------------
+        # Step 4: sign changes of g(alpha)=o(alpha)-alpha
+        # ------------------------------------------------------------
+        sign_changes = []
+
+        extended = [alpha_min] + breakpoints + [np.inf]
+
+        for k in range(len(extended) - 1):
+            a = extended[k]
+            b = extended[k + 1]
+
+            # choose probe in the interval
+            if np.isinf(b):
+                probe = a + 1.0
+            else:
+                probe = 0.5 * (a + b)
+
+            active = np.argmin(phi + d * probe)
+
+            intercept = phi[active]
+            slope = d[active] - 1.0
+
+            # g(alpha)=intercept+slope*alpha
+            if abs(slope) > tol:
+                root = -intercept / slope
+
+                inside = root > a + tol and (np.isinf(b) or root < b - tol)
+
+                if inside:
+                    sign_changes.append(
+                        {
+                            "alpha": root,
+                            "type": "interior root",
+                            "active_minimizer": int(active),
+                        }
+                    )
+
+        # check breakpoints themselves
+        def o(alpha):
+            return np.min(phi + d * alpha)
+
+        for bp in breakpoints:
+            eps = max(1e-8, 1e-8 * max(1.0, abs(bp)))
+
+            g_left = o(max(alpha_min, bp - eps)) - max(alpha_min, bp - eps)
+            g_right = o(bp + eps) - (bp + eps)
+
+            s_left = np.sign(g_left)
+            s_right = np.sign(g_right)
+
+            if s_left * s_right < 0:
+                sign_changes.append(
+                    {
+                        "alpha": bp,
+                        "type": "sign change at envelope breakpoint",
+                    }
+                )
+
+        sign_changes.sort(key=lambda z: z["alpha"])
+
+        return {
+            "alpha_min": alpha_min,
+            "breakpoints": breakpoints,
+            "intervals": intervals,
+            "argmin_changes": argmin_changes,
+            "sign_changes": sign_changes,
+        }
 
     def compute_alphas_supports(self, mu: Measure, varphi: np.ndarray) -> list:
         alphas = []
@@ -370,15 +578,15 @@ class KR_PROX_GRAD:
         mu_plus_constraint = np.zeros((mu_plus_size, variable_size))
         for j in range(mu_size):
             for i in range(mu_plus_size):
-                mu_constraint[j, i * mu_plus_size + j] = 1
-                mu_plus_constraint[i, i * mu_plus_size + j] = 1
+                mu_constraint[j, i * mu_size + j] = 1
+                mu_plus_constraint[i, i * mu_size + j] = 1
                 mu_plus_constraint[i, mu_plus_size * mu_size + i] = 1
 
         # Build coefficients for linear problem
         linear_term = np.zeros(variable_size)
         for j in range(mu_size):
             for i in range(mu_plus_size):
-                linear_term[i * mu_plus_size + j] = (
+                linear_term[i * mu_size + j] = (
                     self.wasserstein_weight
                     * np.linalg.norm(mu.support[j] - mu_plus.support[i])
                     - 1
@@ -390,7 +598,7 @@ class KR_PROX_GRAD:
         constraints = [
             Lambda >= 0,
             mu_constraint @ Lambda <= mu.coefficients,
-            mu_plus_constraint @ Lambda <= mu_plus.coefficients,
+            mu_plus_constraint @ Lambda == mu_plus.coefficients,
         ]
         problem = cp.Problem(
             cp.Minimize(linear_term.T @ Lambda),
@@ -429,7 +637,7 @@ class KR_PROX_GRAD:
                 pass
             else:
                 min_dist = np.min(distances)
-                if not (O_j == alpha and min_dist >= 1):
+                if not (O_j == alpha and min_dist >= 1 / self.wasserstein_weight):
                     min_dist_index = support_indices[np.argmin(distances)]
                     tau_j = mu.coefficients[j]
                     kr_norm += tau_j * (self.wasserstein_weight * min_dist - 1)
@@ -438,6 +646,7 @@ class KR_PROX_GRAD:
                     )
                     if min_dist > 0:
                         number_transported_points += 1
+        logging.info(f"alpha: {alpha}, KR: {kr_norm*self.L}")
         if kr_norm * self.L > alpha:
             return mu_kr, kr_norm, success, number_transported_points
 
@@ -460,9 +669,15 @@ class KR_PROX_GRAD:
         number_transported_points_lower = 0
         number_transported_points_upper = 0
         if alpha_upper > 1e100:
-            # alpha_upper = inf
+            # alpha_upper is inf
             alpha = 1e100
         else:
+            """
+            O_j>alpha is constant on (alpha-, alpha+) by construction. Furthermore,
+            if alpha-<alpha+, then the bounds on the KR norm will be equal,
+            so choosing the alpha as below does not affect the outcome. Otherise,
+            alpha-=alpha+, so the average alpha equals the bounds.
+            """
             alpha = 0.5 * alpha_lower + 0.5 * alpha_upper
         kr_norm_lower = np.linalg.norm(mu.coefficients, ord=1)
         kr_norm_upper = np.linalg.norm(mu.coefficients, ord=1)
@@ -474,7 +689,7 @@ class KR_PROX_GRAD:
             distances = inner_dict["distances"]
             O_j = (
                 varphi[reference_index] + self.wasserstein_weight * alpha * distances[0]
-            )  # O_j>alpha is constant on (alpha-, alpha+) by construction
+            )
             if O_j > alpha:
                 pass
             else:
@@ -485,28 +700,29 @@ class KR_PROX_GRAD:
                 min_dist_index = support_indices[np.argmin(distances)]
                 max_dist_index = support_indices[np.argmax(distances)]
                 tau_j = mu.coefficients[j]
-                if not (O_j == alpha and min_dist >= 1):
+                if not (O_j == alpha and min_dist >= 1 / self.wasserstein_weight):
                     kr_norm_lower += tau_j * (self.wasserstein_weight * min_dist - 1)
+                    # if j == 10:
+                    #     logging.info(tau_j * (self.wasserstein_weight * min_dist - 1)*self.L)
                     mu_kr_lower += Measure(
                         support=[self.domain[min_dist_index]], coefficients=[tau_j]
                     )
                     if min_dist > 0:
                         number_transported_points_lower += 1
-                if not (O_j == alpha and max_dist <= 1):
+                if not (O_j == alpha and max_dist <= 1 / self.wasserstein_weight):
                     kr_norm_upper += tau_j * (self.wasserstein_weight * max_dist - 1)
+                    # if j == 10:
+                    #     logging.info(tau_j * (self.wasserstein_weight * max_dist - 1)*self.L)
                     mu_kr_upper += Measure(
                         support=[self.domain[max_dist_index]], coefficients=[tau_j]
                     )
                     if max_dist > 0:
                         number_transported_points_upper += 1
+        logging.info(
+            f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
+        )
         if kr_norm_lower * self.L > alpha_upper or kr_norm_upper * self.L < alpha_lower:
-            # logging.info(
-            #     f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
-            # )
             return mu_kr_lower, kr_norm_lower, success, number_transported_points_lower
-        # logging.info(
-        #     f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
-        # )
 
         # There exists a valid solution: construct by convex composition
         success = True
@@ -521,6 +737,181 @@ class KR_PROX_GRAD:
             mu_kr = mu_kr_lower * theta + mu_kr_upper * (1 - theta)
             return mu_kr, alpha / self.L, success, number_transported_points
 
+    def compute_supports_per_j(
+        self, alpha_lower: float, alpha_upper: float, all_supports_dict: dict
+    ) -> dict:
+        supports_per_j = {}  # {j: {support indices:, distances:}}
+        for j, supports_per_alpha in all_supports_dict.items():
+            incumbent_support_indices = np.array([])
+            incumbent_distances = np.array([])
+            for alpha_, inner_dict in supports_per_alpha.items():
+                support_indices = inner_dict["support_indices"]
+                support_distances = inner_dict["support_distances"]
+                intermediate_support_indices = inner_dict[
+                    "intermediate_support_indices"
+                ]
+                intermediate_support_distances = inner_dict[
+                    "intermediate_support_distances"
+                ]
+                if alpha_ == alpha_lower and alpha_ == alpha_upper:
+                    incumbent_support_indices = support_indices.copy()
+                    incumbent_distances = support_distances.copy()
+                    break
+                elif alpha_ == alpha_lower:
+                    incumbent_support_indices = intermediate_support_indices.copy()
+                    incumbent_distances = intermediate_support_distances.copy()
+                    break
+                elif alpha_ >= alpha_lower:
+                    break
+                incumbent_support_indices = intermediate_support_indices.copy()
+                incumbent_distances = intermediate_support_distances.copy()
+            supports_per_j[j] = {
+                "support_indices": incumbent_support_indices,
+                "distances": incumbent_distances,
+            }
+        return supports_per_j
+
+    def kr_subproblem_new(self, mu: Measure, varphi: np.ndarray) -> tuple:
+        alphas, all_supports_dict = self.compute_alphas_supports(mu, varphi)
+        alphas = np.append(alphas, np.inf)
+        alpha_intervals = []
+        for i, alpha in enumerate(alphas[:-1]):
+            alpha_intervals.append((alpha, alpha))
+            alpha_intervals.append((alpha, alphas[i + 1]))
+
+        # Loop over the alphas in increasing order to find solution
+        kr_norm_lower = np.inf
+        mu_kr_lower = Measure()
+        number_transported_points_lower = 0
+        for i, (alpha_lower, alpha_upper) in enumerate(alpha_intervals):
+            if alpha_lower == alpha_upper:
+                kr_norm_upper = kr_norm_lower
+                mu_kr_upper = mu_kr_lower.copy()
+                number_transported_points_upper = number_transported_points_lower
+                supports_per_j = self.compute_supports_per_j(
+                    alpha_lower, alpha_upper, all_supports_dict
+                )
+                kr_norm_lower = np.linalg.norm(mu.coefficients, ord=1)
+                number_transported_points_lower = 0
+                mu_kr_lower = Measure()
+                for j, inner_dict in supports_per_j.items():
+                    support_indices = inner_dict["support_indices"]
+                    reference_index = support_indices[0]
+                    distances = inner_dict["distances"]
+                    O_j = (
+                        varphi[reference_index]
+                        + self.wasserstein_weight * alpha * distances[0]
+                    )
+                    if O_j > alpha:
+                        pass
+                    else:
+                        min_dist = np.min(distances)
+                        if not (
+                            O_j == alpha and min_dist >= 1 / self.wasserstein_weight
+                        ):
+                            min_dist_index = support_indices[np.argmin(distances)]
+                            tau_j = mu.coefficients[j]
+                            kr_norm_lower += tau_j * (
+                                self.wasserstein_weight * min_dist - 1
+                            )
+                            mu_kr_lower += Measure(
+                                support=[self.domain[min_dist_index]],
+                                coefficients=[tau_j],
+                            )
+                            if min_dist > 0:
+                                number_transported_points_lower += 1
+                if i == 0:  # alpha=-min varphi
+                    # logging.info(
+                    #     f"alpha: {alpha_lower}, KR-: {kr_norm_lower*self.L}"
+                    # )
+                    if kr_norm_lower * self.L <= alpha_lower:
+                        # There exists a solution, construct by choosing optimal u
+                        alpha = alpha_lower
+                        kr_norm = kr_norm_lower
+                        mu_kr = mu_kr_lower.copy()
+                        number_transported_points = number_transported_points_lower
+                        u = max(alpha / self.L - kr_norm, 0)
+                        x_bar = np.argmin(varphi)
+                        mu_kr += Measure(support=[self.domain[x_bar]], coefficients=[u])
+                        return mu_kr, alpha / self.L, number_transported_points
+                else:
+                    # logging.info(
+                    #     f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
+                    # )
+                    if (
+                        kr_norm_lower * self.L <= alpha_upper
+                        and kr_norm_upper * self.L >= alpha_lower
+                    ):
+                        # There exists a valid solution: construct by convex composition
+                        if kr_norm_lower * self.L == alpha:
+                            number_transported_points = number_transported_points_lower
+                        else:
+                            number_transported_points = number_transported_points_upper
+                        theta = (alpha / self.L - kr_norm_upper) / (
+                            kr_norm_lower - kr_norm_upper
+                        )
+                        mu_kr = mu_kr_lower * theta + mu_kr_upper * (1 - theta)
+                        return mu_kr, alpha / self.L, number_transported_points
+            else:
+                # alpha is an interval
+                kr_norm = kr_norm_lower
+                mu_kr = mu_kr_lower.copy()
+                number_transported_points = number_transported_points_lower
+                # logging.info(
+                #     f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm*self.L}, KR+: {kr_norm*self.L}"
+                # )
+                if kr_norm * self.L <= alpha_upper and kr_norm * self.L >= alpha_lower:
+                    return mu_kr, kr_norm, number_transported_points
+        logging.warning("No KR solution found")
+
+    def kr_step_new(
+        self, mu: Measure, p_mu: Callable, varphi: np.array, log_results: bool
+    ) -> tuple:
+        descent_condition = True
+        if not len(mu.coefficients):
+            # Reference measure is null
+            position = np.argmin(varphi)
+            coef = -varphi[position] / self.L
+            return (
+                Measure(support=[self.domain[position]], coefficients=[coef]),
+                descent_condition,
+                0,
+                coef * self.L,
+            )
+        else:
+            mu_plus, kr_norm, number_transported_points = self.kr_subproblem_new(
+                mu, varphi
+            )
+
+            if log_results:
+                # Check for errors in KR norm
+                try:
+                    kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
+                    if np.abs(kr_norm - kr_norm_cvx) > 1e-6:
+                        logging.warning("Mismatch in KR norm computation")
+                except:
+                    logging.warning("CVX Failed")
+
+            # Check KR descent:
+            diff = self.j(mu_plus) - self.j(mu)
+            kr_rhs = (
+                -mu_plus.duality_pairing(p_mu)
+                + self.beta * np.linalg.norm(mu_plus.coefficients, ord=1)
+                + mu.duality_pairing(p_mu)
+                - self.beta * np.linalg.norm(mu.coefficients, ord=1)
+                + 0.5 * self.L * kr_norm**2
+            )
+            if diff > kr_rhs:
+                # if log_results:
+                #     logging.warning(f"KR Descent condition failed. diff: {diff}, rhs: {kr_rhs}")
+                descent_condition = False
+            return (
+                mu_plus,
+                descent_condition,
+                number_transported_points,
+                kr_norm * self.L,
+            )
+
     def kr_step(
         self, mu: Measure, p_mu: Callable, varphi: np.array, log_results: bool
     ) -> tuple:
@@ -533,6 +924,7 @@ class KR_PROX_GRAD:
                 Measure(support=[self.domain[position]], coefficients=[coef]),
                 descent_condition,
                 0,
+                coef * self.L,
             )
         else:
             alphas, all_supports_dict = self.compute_alphas_supports(mu, varphi)
@@ -543,57 +935,11 @@ class KR_PROX_GRAD:
                 alpha_intervals.append((alpha, alpha))
                 alpha_intervals.append((alpha, alphas[i + 1]))
             # Loop over the alphas in increasing order to find solution
-            # try:
-            #     # logging.info(23)
-            #     # logging.info(all_supports_dict[23])
-            #     # logging.info(25)
-            #     logging.info(all_supports_dict[25])
-            # except:
-            #     pass
             for i, (alpha_lower, alpha_upper) in enumerate(alpha_intervals):
-                supports_per_j = {}  # {j: {support indices:, distances:}}
-                for j, supports_per_alpha in all_supports_dict.items():
-                    incumbent_support_indices = np.array([])
-                    incumbent_distances = np.array([])
-                    for alpha_, inner_dict in supports_per_alpha.items():
-                        # if j == 25:
-                        #     logging.info(alpha_)
-                        support_indices = inner_dict["support_indices"]
-                        support_distances = inner_dict["support_distances"]
-                        intermediate_support_indices = inner_dict[
-                            "intermediate_support_indices"
-                        ]
-                        intermediate_support_distances = inner_dict[
-                            "intermediate_support_distances"
-                        ]
-                        if alpha_ == alpha_lower and alpha_ == alpha_upper:
-                            # if j == 25:
-                            #     logging.info("FFFF" * 100)
-                            #     logging.info(alpha_)
-                            incumbent_support_indices = support_indices.copy()
-                            incumbent_distances = support_distances.copy()
-                            break
-                        elif alpha_ == alpha_lower:
-                            incumbent_support_indices = (
-                                intermediate_support_indices.copy()
-                            )
-                            incumbent_distances = intermediate_support_distances.copy()
-                            break
-                        elif alpha_ >= alpha_lower:
-                            break
-                        incumbent_support_indices = intermediate_support_indices.copy()
-                        incumbent_distances = intermediate_support_distances.copy()
-                    supports_per_j[j] = {
-                        "support_indices": incumbent_support_indices,
-                        "distances": incumbent_distances,
-                    }
-                # try:
-                #     # logging.info(23)
-                #     # logging.info(supports_per_j[23])
-                #     # logging.info(25)
-                #     # logging.info(supports_per_j[25])
-                # except:
-                #     pass
+                supports_per_j = self.compute_supports_per_j(
+                    alpha_lower, alpha_upper, all_supports_dict
+                )
+                # logging.info(supports_per_j[10])
 
                 if not i:
                     mu_plus, kr_norm, success, number_transported_points = (
@@ -616,13 +962,12 @@ class KR_PROX_GRAD:
                     )
 
                 if success:
-                    # kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
-                    # logging.info(f"KR norm: {kr_norm*self.L}")
-                    # logging.info(f"KR norm cvx: {kr_norm_cvx*self.L}")
-                    # if (
-                    #     alpha_lower / self.L - 1e-6 <= kr_norm
-                    #     and alpha_upper / self.L + 1e-6 >= kr_norm
-                    # ):
+                    # if log_results:
+                    #     # Check for errors in KR norm
+                    #     kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
+                    #     if np.abs(kr_norm-kr_norm_cvx) > 1e-6:
+                    #         logging.warning("Mismatch in KR norm computation")
+
                     # Check KR descent:
                     diff = self.j(mu_plus) - self.j(mu)
                     kr_rhs = (
@@ -633,11 +978,15 @@ class KR_PROX_GRAD:
                         + 0.5 * self.L * kr_norm**2
                     )
                     if diff > kr_rhs:
-                        logging.warning(f"KR Descent condition failed")
+                        # if log_results:
+                        #     logging.warning(f"KR Descent condition failed. diff: {diff}, rhs: {kr_rhs}")
                         descent_condition = False
-                    return mu_plus, descent_condition, number_transported_points
-                    # else:
-                    #     logging.warning("Mismatch in KR norm computation")
+                    return (
+                        mu_plus,
+                        descent_condition,
+                        number_transported_points,
+                        kr_norm * self.L,
+                    )
 
         logging.warning("No KR solution found")
 
@@ -664,23 +1013,62 @@ class KR_PROX_GRAD:
             self.L = max(self.L * self.L_reduce_factor, self.L_min)
             descent_condition = False
             while not descent_condition:
-                mu, descent_condition, number_transported_points = self.kr_step(
-                    mu, p_mu, varphi, log_results
+                mu_plus, descent_condition, number_transported_points, alpha = (
+                    self.kr_step(mu, p_mu, varphi, log_results)
                 )
                 if not descent_condition:
                     self.L = min(self.L * self.L_increase_factor, self.L_max)
+            mu = mu_plus.copy()
 
             # update metrics
             times.append(time.perf_counter() - initial_time)
             supports.append(len(mu.support))
             objectives.append(self.j(mu))
 
+            optimal_support = np.array(
+                [2650, 2651, 2751, 5270, 5271, 5371, 7027, 7028, 7127, 7128]
+            )
+            if len(mu.coefficients) == len(optimal_support):
+                optimal_identified = True
+            else:
+                optimal_identified = False
+            for point in self.domain[optimal_support]:
+                if np.min(np.linalg.norm(mu.support - point, axis=1)) > 0:
+                    optimal_identified = False
+            if optimal_identified:
+                logging.info("Optimal support identified")
+
             if log_results:
                 logging.info(
-                    f"{k}: L:{self.L:.3E}, transported points: {number_transported_points}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
+                    f"{k}: L:{self.L:.3E}, transported points: {number_transported_points}, alpha: {alpha:.3E}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
                 )
-                # logging.info("=" * 100)
             k += 1
+
+            # if k==2500:
+            #     logging.basicConfig(
+            #         level=logging.ERROR,
+            #     )
+            #     B, D = np.meshgrid(
+            #                 *(np.linspace(0, 1, 100 + 2)[1:-1] for _ in range(2))
+            #             )
+            #     vals = varphi.reshape((100, 100))
+            #     plt.contourf(B, D, vals, levels=100)
+            #     plt.colorbar()
+            #     # for i, x in enumerate(true_sources):
+            #     #     if i:
+            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
+            #     #     else:
+            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
+            #     for i, x in enumerate(mu.support):
+            #         if i:
+            #             plt.plot([x[0]], [x[1]], "o", c="b")
+            #         else:
+            #             plt.plot([x[0]], [x[1]], "o", c="b", label="Predicted support")
+            #     plt.legend()
+            #     plt.show()
+            #     logging.basicConfig(
+            #         level=logging.DEBUG,
+            #     )
         logging.info(
             f"KR Prox Grad exited after {k} iterations and {times[-1]:.3f}s with final sparsity of {supports[-1]} and objective {objectives[-1]:.12E}"
         )

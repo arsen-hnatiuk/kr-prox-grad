@@ -1,6 +1,7 @@
 import numpy as np
 import sys
 import logging
+import pickle
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Callable
@@ -25,7 +26,7 @@ Omega = np.array([[0, 1], [0, 1]])
 discretization_resolution = 100
 beta = 1e-1
 observation_resolution = 4
-std_factor = 0.1
+std_factor = 0.05
 true_sources = np.array([[0.28, 0.71], [0.51, 0.27], [0.71, 0.53]])
 true_weights = np.array([1, 0.7, 0.8])
 
@@ -108,11 +109,25 @@ def experiment():
         K_transpose=kernel(discretization_domain), beta=beta, target=target
     )
 
+    # PDAP
+    logging.info(f"Computing PDAP solution")
+    u_pdap, objective_values_pdap, times_pdap, supports_pdap = (
+        exp_frank_wolfe.solve_exact(tol=1e-12, log_results=False)
+    )
+    # logging.info(u_pdap.support)
+
+    with open(f"{results_dir}/1500iter.pkl", "rb") as file:
+        u_0 = pickle.load(file)
+
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=1000, max_time=1000, log_results=True
+        max_iter=1500, max_time=3600, log_results=True, mu_0=u_0
     )
+
+    # with open(f"{results_dir}/1500iter.pkl", "wb") as file:
+    #     pickle.dump(u_kr, file)
+
     # logging.info(u_kr.coefficients)
     # for sup, coef in zip(u_kr.support, u_kr.coefficients):
     #     if np.min(np.linalg.norm(true_sources - sup, axis=1))>0.1:
@@ -139,12 +154,6 @@ def experiment():
     #         plt.plot([x[0]], [x[1]], "o", c="b", label="Predicted support")
     # plt.legend()
     # plt.show()
-
-    # PDAP
-    logging.info(f"Computing PDAP solution")
-    u_pdap, objective_values_pdap, times_pdap, supports_pdap = (
-        exp_frank_wolfe.solve_exact(tol=1e-12, log_results=False)
-    )
 
     optimum = objective_values_pdap[-1]
 
