@@ -10,7 +10,7 @@ logging.basicConfig(
 )
 
 
-class FRANK_WOLFE:
+class PDAP:
     # An implementation of the LGCG algorithm for finite Omega
 
     def __init__(
@@ -60,47 +60,7 @@ class FRANK_WOLFE:
         )
         return u
 
-    def solve(self, tol: float, log_results: bool = True) -> dict:
-        u = self.u_0 * 1
-        residuum_u = self.residuum(u)
-        p_u = -self.K_transpose @ residuum_u
-        x = np.argmax(np.abs(p_u))
-        epsilon = 0.5 * self.j(u) / self.M
-        Psi = self.M * epsilon  # epsilon
-        k = 1
-        Phi_value = self.Phi(p_u, u, x)
-        start_time = time.perf_counter()
-        objectives = [self.j(u)]
-        times = [time.perf_counter() - start_time]
-        while Phi_value > tol:
-            Psi = max(min(0.5 * Phi_value, Psi), 2 * self.machine_precision)
-            if abs(p_u[x]) < self.beta:
-                v_k = Measure()
-            else:
-                v_k = Measure(support=[[x]], coefficients=[self.M * np.sign(p_u[x])])
-            eta = max(min(1, Phi_value / self.C), 10 * self.machine_precision)
-            u = u * (1 - eta) + v_k * eta
-
-            u = self.finite_dimensional_step(u, Psi, log_results)
-            residuum_u = self.residuum(u)
-            p_u = -self.K_transpose @ residuum_u
-            x = np.argmax(np.abs(p_u))
-            Phi_value = self.Phi(p_u, u, x)
-            self.M = self.j(u) / self.beta
-
-            if log_results:
-                logging.info(
-                    f"{k}: Phi {Phi_value:.3E}, epsilon {epsilon:.3E}, support {u.support}, Psi {Psi:.3E}, x: {x}"
-                )
-            objectives.append(self.j(u))
-            times.append(time.perf_counter() - start_time)
-            k += 1
-        logging.info(
-            f"Finite LPDAP converged in {k} iterations and {time.perf_counter()-start_time:.3f}s to tolerance {tol:.3E} with final sparsity of {len(u.support)} and objective {objectives[-1]:.12E}"
-        )
-        return u, objectives, times
-
-    def solve_exact(self, tol: float, log_results: True) -> dict:
+    def solve(self, tol: float, log_results: True) -> dict:
         u = self.u_0 * 1
         residuum_u = self.residuum(u)
         p_u = -self.K_transpose @ residuum_u

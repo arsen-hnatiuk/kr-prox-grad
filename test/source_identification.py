@@ -14,7 +14,7 @@ if src_path not in sys.path:
     sys.path.append(str(src_path))
 from lib.measure import Measure
 from kr_prox_grad import KR_PROX_GRAD
-from frank_wolfe import FRANK_WOLFE
+from pdap import PDAP
 
 results_dir = Path("results/source_identification")
 
@@ -105,57 +105,31 @@ def experiment():
     exp_kr_prox_grad = KR_PROX_GRAD(
         j=j, p=p, beta=beta, domain=discretization_domain, L=L
     )
-    exp_frank_wolfe = FRANK_WOLFE(
-        K_transpose=kernel(discretization_domain), beta=beta, target=target
-    )
+    exp_pdap = PDAP(K_transpose=kernel(discretization_domain), beta=beta, target=target)
 
     # PDAP
     logging.info(f"Computing PDAP solution")
-    u_pdap, objective_values_pdap, times_pdap, supports_pdap = (
-        exp_frank_wolfe.solve_exact(tol=1e-12, log_results=False)
+    u_pdap, objective_values_pdap, times_pdap, supports_pdap = exp_pdap.solve(
+        tol=1e-12, log_results=False
     )
-    # logging.info(u_pdap.support)
 
-    with open(f"{results_dir}/1500iter.pkl", "rb") as file:
-        u_0 = pickle.load(file)
+    warm_start = False
+    if warm_start:
+        with open(f"{results_dir}/3000iter.pkl", "rb") as file:
+            u_0 = pickle.load(file)
+    else:
+        u_0 = Measure()
 
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=1500, max_time=3600, log_results=True, mu_0=u_0
+        max_iter=10000, max_time=3600, log_results=True, mu_0=u_0
     )
 
-    # with open(f"{results_dir}/1500iter.pkl", "wb") as file:
+    # with open(f"{results_dir}/3000iter.pkl", "wb") as file:
     #     pickle.dump(u_kr, file)
 
-    # logging.info(u_kr.coefficients)
-    # for sup, coef in zip(u_kr.support, u_kr.coefficients):
-    #     if np.min(np.linalg.norm(true_sources - sup, axis=1))>0.1:
-    #         logging.info(f"point: {sup}, coef: {coef}")
-    # p_u = p(u_kr)
-    # P = lambda x: np.abs(p_u(x))
-    # B, D = np.meshgrid(
-    #             *(np.linspace(bound[0], bound[1], discretization_resolution + 2)[1:-1] for bound in Omega)
-    #         )
-    # vals = np.array(
-    #     [P(np.array([x_1, x_2])) for x_1, x_2 in zip(B.flatten(), D.flatten())]
-    # ).reshape((100, 100))
-    # plt.contourf(B, D, vals, levels=100)
-    # plt.colorbar()
-    # for i, x in enumerate(true_sources):
-    #     if i:
-    #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-    #     else:
-    #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-    # for i, x in enumerate(u_kr.support):
-    #     if i:
-    #         plt.plot([x[0]], [x[1]], "o", c="b")
-    #     else:
-    #         plt.plot([x[0]], [x[1]], "o", c="b", label="Predicted support")
-    # plt.legend()
-    # plt.show()
-
-    optimum = objective_values_pdap[-1]
+    optimum = 0.249897875259  # computed with PDAP
 
     residuals_pdap = np.array(objective_values_pdap) - optimum
     residuals_kr_prox_grad = np.array(objective_values_kr) - optimum
