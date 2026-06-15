@@ -11,8 +11,6 @@ logging.basicConfig(
 
 
 class PDAP:
-    # An implementation of the LGCG algorithm for finite Omega
-
     def __init__(
         self,
         target: np.ndarray,
@@ -60,7 +58,7 @@ class PDAP:
         )
         return u
 
-    def solve(self, tol: float, log_results: True) -> dict:
+    def solve(self, tol: float, log_results: True) -> tuple:
         u = self.u_0 * 1
         residuum_u = self.residuum(u)
         p_u = -self.K_transpose @ residuum_u

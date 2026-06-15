@@ -14,6 +14,8 @@ if src_path not in sys.path:
     sys.path.append(str(src_path))
 from lib.measure import Measure
 from kr_prox_grad import KR_PROX_GRAD
+from l2_prox_grad import L2_PROX_GRAD
+from frank_wolfe import FRANK_WOLFE
 from pdap import PDAP
 
 results_dir = Path("results/source_identification")
@@ -90,7 +92,9 @@ g = lambda u: beta * np.linalg.norm(u, ord=1)
 f = lambda y: 0.5 * np.linalg.norm(y - target) ** 2
 j = lambda u: f(u.duality_pairing(kernel)) + g(u.coefficients)
 
-kernel_norm_0 = np.max(np.linalg.norm(kernel(discretization_domain), axis=1))
+K_transpose = kernel(discretization_domain)
+
+kernel_norm_0 = np.max(np.linalg.norm(K_transpose, axis=1))
 kernel_norm_1 = np.max(np.linalg.norm(grad_kernel(discretization_domain), axis=(1, 2)))
 L = max(kernel_norm_0, kernel_norm_1) ** 2
 
@@ -102,10 +106,16 @@ def p(u):
 
 
 def experiment():
-    exp_kr_prox_grad = KR_PROX_GRAD(
-        j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=0.1
+    exp_pdap = PDAP(K_transpose=K_transpose, beta=beta, target=target)
+    exp_l2_prox_grad = L2_PROX_GRAD(
+        K_matrix=K_transpose.T, target=target, beta=beta, L=L
     )
-    exp_pdap = PDAP(K_transpose=kernel(discretization_domain), beta=beta, target=target)
+    exp_frank_wolfe = FRANK_WOLFE(
+        target=target, K_transpose=K_transpose, beta=beta, L=L
+    )
+    exp_kr_prox_grad = KR_PROX_GRAD(
+        j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=0.5
+    )
 
     # PDAP
     logging.info(f"Computing PDAP solution")
@@ -113,6 +123,18 @@ def experiment():
         tol=1e-12, log_results=False
     )
     optimum = objective_values_pdap[-1]
+
+    # L2 Prox Grad
+    logging.info(f"Computing L2 Prox Grad solution")
+    u_l2, objective_values_l2, times_l2, supports_l2 = exp_l2_prox_grad.solve(
+        max_iter=1e7, max_time=60, log_results=False, optimum=optimum
+    )
+
+    # Frank-Wolfe
+    logging.info(f"Computing Frank-Wolfe solution")
+    u_fw, objective_values_fw, times_fw, supports_fw = exp_frank_wolfe.solve(
+        max_iter=1e7, max_time=60, log_results=False, optimum=optimum
+    )
 
     warm_start = False
     if warm_start:
@@ -124,27 +146,31 @@ def experiment():
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=10000, max_time=3600, log_results=True, mu_0=u_0, optimum=optimum
+        max_iter=1e7, max_time=60, log_results=False, mu_0=u_0, optimum=optimum
     )
 
     with open(f"{results_dir}/6400iter.pkl", "wb") as file:
         pickle.dump(u_kr, file)
 
     residuals_pdap = np.array(objective_values_pdap) - optimum
-    residuals_kr_prox_grad = np.array(objective_values_kr) - optimum
+    residuals_l2 = np.array(objective_values_l2) - optimum
+    residuals_fw = np.array(objective_values_fw) - optimum
+    residuals_kr = np.array(objective_values_kr) - optimum
 
     logging.getLogger().setLevel(logging.WARNING)  # Supress logging
 
     # Plot residuals vs time
     fig, ax = plt.subplots(figsize=(7, 5))
-    names = ["PDAP", "KR Prox Grad"]
-    styles = ["-", ":"]
-    colors = ["red", "blue"]
+    names = ["PDAP", "L2 Prox Grad", "Frank-Wolfe", "KR Prox Grad"]
+    styles = ["-", "-.", "--", ":"]
+    colors = ["red", "green", "orange", "blue"]
     for domain, array, name, style, color in zip(
-        [times_pdap, times_kr],
+        [times_pdap, times_l2, times_fw, times_kr],
         [
             residuals_pdap,
-            residuals_kr_prox_grad,
+            residuals_l2,
+            residuals_fw,
+            residuals_kr,
         ],
         names,
         styles,
@@ -167,13 +193,15 @@ def experiment():
 
     # Plot residuals vs iterations
     fig, ax = plt.subplots(figsize=(7, 5))
-    names = ["PDAP", "KR Prox Grad"]
-    styles = ["-", ":"]
-    colors = ["red", "blue"]
+    names = ["PDAP", "L2 Prox Grad", "Frank-Wolfe", "KR Prox Grad"]
+    styles = ["-", "-.", "--", ":"]
+    colors = ["red", "green", "orange", "blue"]
     for array, name, style, color in zip(
         [
             residuals_pdap,
-            residuals_kr_prox_grad,
+            residuals_l2,
+            residuals_fw,
+            residuals_kr,
         ],
         names,
         styles,
@@ -196,12 +224,14 @@ def experiment():
 
     # Plot supports
     fig, ax = plt.subplots(figsize=(7, 5))
-    names = ["PDAP", "KR Prox Grad"]
-    styles = ["-", ":"]
-    colors = ["red", "blue"]
+    names = ["PDAP", "L2 Prox Grad", "Frank-Wolfe", "KR Prox Grad"]
+    styles = ["-", "-.", "--", ":"]
+    colors = ["red", "green", "orange", "blue"]
     for array, name, style, color in zip(
         [
             supports_pdap,
+            supports_l2,
+            supports_fw,
             supports_kr,
         ],
         names,

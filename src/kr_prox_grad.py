@@ -33,7 +33,7 @@ class KR_PROX_GRAD:
         self.L_max = np.inf
         self.L_min = 1
         self.L_reduce_factor = 0.9
-        self.L_increase_factor = 1.5
+        self.L_increase_factor = 2
         self.tol = tol
 
     def compute_alphas_supports_y(self, y: np.array, varphi: np.array) -> dict:
@@ -370,7 +370,7 @@ class KR_PROX_GRAD:
                 + self.beta * np.linalg.norm(mu_plus.coefficients, ord=1)
                 + mu.duality_pairing(p_mu)
                 - self.beta * np.linalg.norm(mu.coefficients, ord=1)
-                + 0.5 * self.L * kr_norm**2  # / (2 * self.wasserstein_weight**2)
+                + 0.5 * self.L * kr_norm**2
             )
             if diff > kr_rhs or diff > 0:
                 descent_condition = False
