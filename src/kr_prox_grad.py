@@ -21,18 +21,20 @@ class KR_PROX_GRAD:
         beta: float,
         domain: np.ndarray,
         L: float,
+        wasserstein_weight: float = 1,
+        tol: float = 1e-8,
     ) -> None:
+        self.wasserstein_weight = wasserstein_weight
         self.j = j
         self.p = p
         self.beta = beta
         self.domain = domain
         self.L = L
-        self.L_max = L
+        self.L_max = np.inf
         self.L_min = 1
         self.L_reduce_factor = 0.9
         self.L_increase_factor = 1.5
-        self.wasserstein_weight = 1
-        self.tol = 1e-8
+        self.tol = tol
 
     def compute_alphas_supports_y(self, y: np.array, varphi: np.array) -> dict:
         supports_dict = {}
@@ -67,7 +69,6 @@ class KR_PROX_GRAD:
             intersection_vector = (varphi[reference_index] - varphi) / (
                 self.wasserstein_weight * (distances - distances[reference_index])
             )
-
             np.seterr(divide="warn", invalid="warn")
             intersection_vector = np.nan_to_num(
                 intersection_vector, nan=np.inf, posinf=np.inf, neginf=np.inf
@@ -95,8 +96,12 @@ class KR_PROX_GRAD:
                 + alpha_plus * self.wasserstein_weight * distances[reference_index]
             )
             if (
-                O_j_lower <= alpha - self.tol and O_j_upper >= alpha_plus + self.tol
-            ) or (O_j_lower >= alpha + self.tol and O_j_upper <= alpha_plus - self.tol):
+                O_j_lower <= alpha * (1 - np.sign(alpha) * self.tol)
+                and O_j_upper >= alpha_plus * (1 + np.sign(alpha_plus) * self.tol)
+            ) or (
+                O_j_lower >= alpha * (1 + np.sign(alpha) * self.tol)
+                and O_j_upper <= alpha_plus * (1 - np.sign(alpha_plus) * self.tol)
+            ):
                 if (
                     abs(1 - self.wasserstein_weight * distances[reference_index])
                     > self.tol
@@ -118,7 +123,7 @@ class KR_PROX_GRAD:
             varphi[reference_index]
             + alpha * self.wasserstein_weight * distances[reference_index]
         )
-        if O_j >= alpha + self.tol:
+        if O_j >= alpha * (1 + np.sign(alpha) * self.tol):
             O_j_alpha = varphi[reference_index]
             supports_dict[O_j_alpha] = {
                 "support_indices": intermediate_support_indices,
@@ -202,14 +207,13 @@ class KR_PROX_GRAD:
                 intermediate_support_distances = inner_dict[
                     "intermediate_support_distances"
                 ]
-                if (
-                    abs(alpha_ - alpha_lower) <= self.tol
-                    and abs(alpha_ - alpha_upper) <= self.tol
-                ):
+                if abs(alpha_ - alpha_lower) <= abs(alpha_lower * self.tol) and abs(
+                    alpha_ - alpha_upper
+                ) <= abs(alpha_upper * self.tol):
                     incumbent_support_indices = support_indices.copy()
                     incumbent_distances = support_distances.copy()
                     break
-                elif abs(alpha_ - alpha_lower) <= self.tol:
+                elif abs(alpha_ - alpha_lower) <= abs(alpha_lower * self.tol):
                     incumbent_support_indices = intermediate_support_indices.copy()
                     incumbent_distances = intermediate_support_distances.copy()
                     break
@@ -255,12 +259,12 @@ class KR_PROX_GRAD:
                         varphi[reference_index]
                         + self.wasserstein_weight * alpha * distances[0]
                     )
-                    if O_j > alpha:
+                    if O_j >= alpha * (1 + np.sign(alpha) * self.tol):
                         pass
                     else:
                         min_dist = np.min(distances)
                         if not (
-                            abs(O_j - alpha) < self.tol
+                            abs(O_j - alpha) < abs(alpha * self.tol)
                             and min_dist >= 1 / self.wasserstein_weight
                         ):
                             min_dist_index = support_indices[np.argmin(distances)]
@@ -276,7 +280,10 @@ class KR_PROX_GRAD:
                                 number_transported_points_lower += 1
                 if i == 0:  # alpha=-min varphi
                     # logging.info(f"alpha: {alpha}, KR-: {kr_norm_lower*self.L}")
-                    if kr_norm_lower <= alpha / self.L:
+                    if (
+                        kr_norm_lower
+                        <= alpha * (1 + np.sign(alpha) * self.tol) / self.L
+                    ):
                         # There exists a solution, construct by choosing optimal u
                         kr_norm = kr_norm_lower
                         mu_kr = mu_kr_lower.copy()
@@ -290,23 +297,30 @@ class KR_PROX_GRAD:
                     #     f"alpha-: {alpha}, alpha+: {alpha}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
                     # )
                     if (
-                        kr_norm_lower <= alpha / self.L
-                        and kr_norm_upper >= alpha / self.L
+                        kr_norm_lower
+                        <= alpha * (1 + np.sign(alpha) * self.tol) / self.L
+                        and kr_norm_upper
+                        >= alpha * (1 - np.sign(alpha) * self.tol) / self.L
                     ):
                         # There exists a valid solution: construct by convex composition
-                        if abs(kr_norm_lower - alpha / self.L) < self.tol:
+                        if abs(kr_norm_lower - alpha / self.L) < abs(alpha * self.tol):
                             number_transported_points = number_transported_points_lower
                         else:
                             number_transported_points = number_transported_points_upper
-                        if abs(kr_norm_lower - kr_norm_upper) < self.tol:
+                        if abs(kr_norm_lower - kr_norm_upper) < abs(alpha * self.tol):
                             return (
                                 mu_kr_lower,
                                 alpha / self.L,
                                 number_transported_points,
                             )
                         else:
-                            theta = (alpha / self.L - kr_norm_upper) / (
-                                kr_norm_lower - kr_norm_upper
+                            theta = min(
+                                max(
+                                    (alpha / self.L - kr_norm_upper)
+                                    / (kr_norm_lower - kr_norm_upper),
+                                    0,
+                                ),
+                                1,
                             )
                             mu_kr = mu_kr_lower * theta + mu_kr_upper * (1 - theta)
                             return mu_kr, alpha / self.L, number_transported_points
@@ -318,7 +332,12 @@ class KR_PROX_GRAD:
                 # logging.info(
                 #     f"alpha-: {alpha_lower}, alpha+: {alpha_upper}, KR-: {kr_norm*self.L}, KR+: {kr_norm*self.L}"
                 # )
-                if kr_norm <= alpha_upper / self.L and kr_norm >= alpha_lower / self.L:
+                if (
+                    kr_norm
+                    <= alpha_upper * (1 + np.sign(alpha_upper) * self.tol) / self.L
+                    and kr_norm
+                    >= alpha_lower * (1 - np.sign(alpha_lower) * self.tol) / self.L
+                ):
                     return mu_kr, kr_norm, number_transported_points
         logging.warning("No KR solution found")
 
@@ -351,9 +370,9 @@ class KR_PROX_GRAD:
                 + self.beta * np.linalg.norm(mu_plus.coefficients, ord=1)
                 + mu.duality_pairing(p_mu)
                 - self.beta * np.linalg.norm(mu.coefficients, ord=1)
-                + 0.5 * self.L * kr_norm**2
+                + 0.5 * self.L * kr_norm**2  # / (2 * self.wasserstein_weight**2)
             )
-            if diff > kr_rhs:
+            if diff > kr_rhs or diff > 0:
                 descent_condition = False
             return (
                 mu_plus,
@@ -368,6 +387,8 @@ class KR_PROX_GRAD:
         max_time: float = 60.0,
         max_iter: int = 250,
         log_results: bool = True,
+        optimum: float = np.inf,
+        exit_tol: float = 1e-10,
     ) -> tuple:
         mu = mu_0
         times = [0]
@@ -379,14 +400,7 @@ class KR_PROX_GRAD:
             p_mu = self.p(mu)
             varphi = -p_mu(self.domain) + self.beta
 
-            # Check optimality
-            if (
-                len(mu.coefficients)
-                and np.all(varphi >= 0)
-                and np.linalg.norm(p_mu(mu.support) - self.beta) < 1e-12
-            ):
-                break
-
+            # Line search
             self.L = max(self.L * self.L_reduce_factor, self.L_min)
             descent_condition = False
             while not descent_condition:
@@ -395,8 +409,9 @@ class KR_PROX_GRAD:
                 )
                 if not descent_condition:
                     self.L = min(self.L * self.L_increase_factor, self.L_max)
+
             mu = mu_plus.copy()
-            if np.any(mu.coefficients < 0):
+            if np.any(mu.coefficients <= -self.tol):
                 logging.warning("Negative coefficients")
 
             # update metrics
@@ -404,12 +419,15 @@ class KR_PROX_GRAD:
             supports.append(len(mu.support))
             objectives.append(self.j(mu))
 
-            if objectives[-1] > objectives[-2] + self.tol:
+            if objectives[-1] > objectives[-2] * (1 + self.tol):
                 logging.warning("Ascent observed")
             if log_results:
                 logging.info(
                     f"{k}: L:{self.L:.3E}, transported points: {number_transported_points}, alpha: {alpha:.3E}, support {supports[-1]}, objective: {objectives[-1]:.12E}"
                 )
+            # Check optimality
+            if abs(objectives[-1] - optimum) < exit_tol:
+                break
             k += 1
 
             # if k==2500:

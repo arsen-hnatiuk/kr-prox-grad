@@ -103,7 +103,7 @@ def p(u):
 
 def experiment():
     exp_kr_prox_grad = KR_PROX_GRAD(
-        j=j, p=p, beta=beta, domain=discretization_domain, L=L
+        j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=0.1
     )
     exp_pdap = PDAP(K_transpose=kernel(discretization_domain), beta=beta, target=target)
 
@@ -112,10 +112,11 @@ def experiment():
     u_pdap, objective_values_pdap, times_pdap, supports_pdap = exp_pdap.solve(
         tol=1e-12, log_results=False
     )
+    optimum = objective_values_pdap[-1]
 
     warm_start = False
     if warm_start:
-        with open(f"{results_dir}/3000iter.pkl", "rb") as file:
+        with open(f"{results_dir}/6400iter.pkl", "rb") as file:
             u_0 = pickle.load(file)
     else:
         u_0 = Measure()
@@ -123,13 +124,11 @@ def experiment():
     # KR Prox Grad
     logging.info(f"Computing KR Prox Grad solution")
     u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=10000, max_time=3600, log_results=True, mu_0=u_0
+        max_iter=10000, max_time=3600, log_results=True, mu_0=u_0, optimum=optimum
     )
 
-    # with open(f"{results_dir}/3000iter.pkl", "wb") as file:
-    #     pickle.dump(u_kr, file)
-
-    optimum = 0.249897875259  # computed with PDAP
+    with open(f"{results_dir}/6400iter.pkl", "wb") as file:
+        pickle.dump(u_kr, file)
 
     residuals_pdap = np.array(objective_values_pdap) - optimum
     residuals_kr_prox_grad = np.array(objective_values_kr) - optimum
