@@ -23,6 +23,7 @@ class KR_PROX_GRAD:
         L: float,
         wasserstein_weight: float = 1,
         tol: float = 1e-8,
+        transport_plot: bool = False,
     ) -> None:
         self.wasserstein_weight = wasserstein_weight
         self.j = j
@@ -35,6 +36,7 @@ class KR_PROX_GRAD:
         self.L_reduce_factor = 0.9
         self.L_increase_factor = 2
         self.tol = tol
+        self.transport_plot = transport_plot
 
     def compute_alphas_supports_y(self, y: np.array, varphi: np.array) -> dict:
         supports_dict = {}
@@ -228,6 +230,8 @@ class KR_PROX_GRAD:
         return supports_per_j
 
     def kr_subproblem(self, mu: Measure, varphi: np.ndarray) -> tuple:
+        plotting_dict = {}  # {j: [initial_point:, transported_to:]}
+
         alphas, all_supports_dict = self.compute_alphas_supports(mu, varphi)
         alphas = np.append(alphas, np.inf)
         alpha_intervals = []
@@ -291,7 +295,12 @@ class KR_PROX_GRAD:
                         u = max(alpha / self.L - kr_norm, 0)
                         x_bar = np.argmin(varphi)
                         mu_kr += Measure(support=[self.domain[x_bar]], coefficients=[u])
-                        return mu_kr, alpha / self.L, number_transported_points
+                        return (
+                            mu_kr,
+                            alpha / self.L,
+                            number_transported_points,
+                            plotting_dict,
+                        )
                 else:
                     # logging.info(
                     #     f"alpha-: {alpha}, alpha+: {alpha}, KR-: {kr_norm_lower*self.L}, KR+: {kr_norm_upper*self.L}"
@@ -302,7 +311,7 @@ class KR_PROX_GRAD:
                         and kr_norm_upper
                         >= alpha * (1 - np.sign(alpha) * self.tol) / self.L
                     ):
-                        # There exists a valid solution: construct by convex composition
+                        # There exists a valid solution: construct by convex combination
                         if abs(kr_norm_lower - alpha / self.L) < abs(alpha * self.tol):
                             number_transported_points = number_transported_points_lower
                         else:
@@ -312,6 +321,7 @@ class KR_PROX_GRAD:
                                 mu_kr_lower,
                                 alpha / self.L,
                                 number_transported_points,
+                                plotting_dict,
                             )
                         else:
                             theta = min(
@@ -323,7 +333,43 @@ class KR_PROX_GRAD:
                                 1,
                             )
                             mu_kr = mu_kr_lower * theta + mu_kr_upper * (1 - theta)
-                            return mu_kr, alpha / self.L, number_transported_points
+                            if (
+                                self.transport_plot
+                                and theta > 0
+                                and theta < 1
+                                and number_transported_points
+                            ):
+                                # Prepare iterate for plotting
+                                for j, inner_dict in supports_per_j.items():
+                                    if len(inner_dict["support_indices"]) > 1:
+                                        transported_to = []
+                                        for inner_index in inner_dict[
+                                            "support_indices"
+                                        ]:
+                                            inner_point = self.domain[inner_index]
+                                            if (
+                                                np.min(
+                                                    np.linalg.norm(
+                                                        mu_kr.support - inner_point,
+                                                        axis=1,
+                                                    )
+                                                )
+                                                == 0
+                                            ):
+                                                transported_to.append(inner_point)
+                                        if len(transported_to) > 1:
+                                            plotting_dict[j] = {
+                                                "initial_point": mu.support[j],
+                                                "transported_to": np.array(
+                                                    transported_to
+                                                ),
+                                            }
+                            return (
+                                mu_kr,
+                                alpha / self.L,
+                                number_transported_points,
+                                plotting_dict,
+                            )
             else:
                 # (alpha-, alpha+) is a true interval
                 kr_norm = kr_norm_lower
@@ -338,12 +384,13 @@ class KR_PROX_GRAD:
                     and kr_norm
                     >= alpha_lower * (1 - np.sign(alpha_lower) * self.tol) / self.L
                 ):
-                    return mu_kr, kr_norm, number_transported_points
+                    return mu_kr, kr_norm, number_transported_points, plotting_dict
         logging.warning("No KR solution found")
 
     def kr_step(
         self, mu: Measure, p_mu: Callable, varphi: np.array, log_results: bool
     ) -> tuple:
+        plotting_dict = {}
         descent_condition = True
         if not len(mu.coefficients):
             # Reference measure is null
@@ -354,9 +401,20 @@ class KR_PROX_GRAD:
                 descent_condition,
                 0,
                 coef * self.L,
+                plotting_dict,
             )
         else:
-            mu_plus, kr_norm, number_transported_points = self.kr_subproblem(mu, varphi)
+            mu_plus, kr_norm, number_transported_points, plotting_dict = (
+                self.kr_subproblem(mu, varphi)
+            )
+            if self.transport_plot and plotting_dict:
+                return (
+                    mu_plus,
+                    descent_condition,
+                    number_transported_points,
+                    kr_norm * self.L,
+                    plotting_dict,
+                )
 
             if log_results:
                 kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
@@ -379,6 +437,7 @@ class KR_PROX_GRAD:
                 descent_condition,
                 number_transported_points,
                 kr_norm * self.L,
+                plotting_dict,
             )
 
     def solve(
@@ -404,11 +463,18 @@ class KR_PROX_GRAD:
             self.L = max(self.L * self.L_reduce_factor, self.L_min)
             descent_condition = False
             while not descent_condition:
-                mu_plus, descent_condition, number_transported_points, alpha = (
-                    self.kr_step(mu, p_mu, varphi, log_results)
-                )
+                (
+                    mu_plus,
+                    descent_condition,
+                    number_transported_points,
+                    alpha,
+                    plotting_dict,
+                ) = self.kr_step(mu, p_mu, varphi, log_results)
                 if not descent_condition:
                     self.L = min(self.L * self.L_increase_factor, self.L_max)
+
+            if self.transport_plot and plotting_dict:
+                return mu, mu_plus, plotting_dict
 
             mu = mu_plus.copy()
             if np.any(mu.coefficients <= -self.tol):
@@ -429,32 +495,6 @@ class KR_PROX_GRAD:
             if abs(objectives[-1] - optimum) < exit_tol:
                 break
             k += 1
-
-            # if k==2500:
-            #     logging.basicConfig(
-            #         level=logging.ERROR,
-            #     )
-            #     B, D = np.meshgrid(
-            #                 *(np.linspace(0, 1, 100 + 2)[1:-1] for _ in range(2))
-            #             )
-            #     vals = varphi.reshape((100, 100))
-            #     plt.contourf(B, D, vals, levels=100)
-            #     plt.colorbar()
-            #     # for i, x in enumerate(true_sources):
-            #     #     if i:
-            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10)
-            #     #     else:
-            #     #         plt.plot([x[0]], [x[1]], "P", c="r", markersize=10, label="True sources")
-            #     for i, x in enumerate(mu.support):
-            #         if i:
-            #             plt.plot([x[0]], [x[1]], "o", c="b")
-            #         else:
-            #             plt.plot([x[0]], [x[1]], "o", c="b", label="Predicted support")
-            #     plt.legend()
-            #     plt.show()
-            #     logging.basicConfig(
-            #         level=logging.DEBUG,
-            #     )
         logging.info(
             f"KR Prox Grad exited after {k} iterations and {times[-1]:.3f}s with final sparsity of {supports[-1]} and objective {objectives[-1]:.12E}"
         )
