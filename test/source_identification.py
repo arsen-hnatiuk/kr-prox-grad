@@ -259,11 +259,11 @@ def experiment():
 
     fig, ax = plt.subplots(figsize=(7, 5))
     names = [
-        f"KR Prox Grad at {wasserstein_weight}"
+        rf"KR Prox Grad, $\vartheta={wasserstein_weight}$"
         for wasserstein_weight in wasserstein_weights
     ]
     styles = ["-", "-.", "--", ":"]
-    colors = ["lightblue", "dodgerblue", "blue", "darkblue"]
+    colors = ["lightblue", "dodgerblue", "blue", "black"]
     for domain, array, name, style, color in zip(
         all_times_kr,
         all_residuals_kr,
@@ -321,7 +321,7 @@ def experiment():
         for wasserstein_weight in wasserstein_weights
     ]
     styles = ["-", "-.", "--", ":"]
-    colors = ["lightblue", "dodgerblue", "blue", "darkblue"]
+    colors = ["lightblue", "dodgerblue", "blue", "black"]
     for array, name, style, color in zip(
         all_residuals_kr,
         names,
@@ -357,7 +357,7 @@ def experiment():
         styles,
         colors,
     ):
-        ax.plot(np.arange(len(array)), array, linestyle=style, label=name, c=color)
+        ax.loglog(np.arange(len(array)), array, linestyle=style, label=name, c=color)
     plt.ylabel("Support points")
     plt.xlabel("Iterations")
     ax.legend()
@@ -370,7 +370,7 @@ def experiment():
         for wasserstein_weight in wasserstein_weights
     ]
     styles = ["-", "-.", "--", ":"]
-    colors = ["lightblue", "dodgerblue", "blue", "darkblue"]
+    colors = ["lightblue", "dodgerblue", "blue", "black"]
     for array, name, style, color in zip(
         all_supports_kr,
         names,

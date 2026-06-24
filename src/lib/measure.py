@@ -16,6 +16,9 @@ class Measure:
                 matrix = matrix.reshape(1, -1)
             coefficients = matrix[:, 0]
             support = matrix[:, 1:]
+        else:
+            support = np.array(support)
+            coefficients = np.array(coefficients)
         support, index, inverse_index, frequencies = np.unique(
             np.array(support),
             axis=0,
