@@ -89,12 +89,11 @@ def generate_data(discretization_resolution: int) -> tuple:
 
     u_hat = Measure(support=true_sources, coefficients=true_weights)
     target = u_hat.duality_pairing(kernel)
+    K_transpose = kernel(discretization_domain)
 
     g = lambda u: beta * np.linalg.norm(u, ord=1)
-    f = lambda y: 0.5 * np.linalg.norm(y - target) ** 2
-    j = lambda u: f(u.duality_pairing(kernel)) + g(u.coefficients)
-
-    K_transpose = kernel(discretization_domain)
+    f = lambda y: 0.5 * np.sum((y - target) ** 2)
+    j = lambda u: f(u.duality_pairing(K_transpose)) + g(u.coefficients)
 
     kernel_norm_0 = np.max(np.linalg.norm(K_transpose, axis=1))
     kernel_norm_1 = np.max(
@@ -103,14 +102,26 @@ def generate_data(discretization_resolution: int) -> tuple:
     L = max(kernel_norm_0, kernel_norm_1) ** 2
 
     def p(u):
-        Ku = u.duality_pairing(kernel)
+        Ku = u.duality_pairing(K_transpose)
         inner = Ku - target
-        return lambda x: -kernel(x) @ inner
+        return -K_transpose @ inner
 
     return K_transpose, beta, target, L, j, p, discretization_domain
 
 
 def experiment():
+    K_transpose, beta, target, L, j, p, discretization_domain = generate_data(100)
+    exp_kr_prox_grad = KR_PROX_GRAD(
+        j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=1
+    )
+    u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
+        max_iter=1e7,
+        max_time=600,
+        log_results=True,
+        mu_0=Measure(),
+        optimum=0.2498978752594,
+    )
+    return
 
     logging.info("Running the algorithms on different meshes")
     mesh_sizes = [50, 100, 500]

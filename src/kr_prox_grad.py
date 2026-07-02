@@ -1,6 +1,7 @@
 import numpy as np
 import logging
 import time
+import math
 import cvxpy as cp
 from typing import Callable
 from itertools import combinations
@@ -39,14 +40,16 @@ class KR_PROX_GRAD:
         self.transport_plot = transport_plot
         self.distance_cache = {}
 
-    def compute_alphas_supports_y(self, y_index: int, varphi: np.array) -> dict:
+    def compute_alphas_supports_y(
+        self, y_index: int, varphi: np.array, min_varphi: float
+    ) -> dict:
         supports_dict = {}
         y = self.domain[y_index]
         distances = self.distance_cache.get(y_index, np.array([]))
         if not len(distances):
             distances = np.linalg.norm(self.domain - y, axis=1).flatten()
             self.distance_cache[y_index] = distances
-        alpha = -np.min(varphi)
+        alpha = -min_varphi
         o_j = varphi + alpha * self.wasserstein_weight * distances
         O_j = np.min(o_j)
         support_indices = np.where(o_j == O_j)[0]
@@ -141,13 +144,17 @@ class KR_PROX_GRAD:
 
         return supports_dict
 
-    def compute_alphas_supports(self, mu_index: Measure, varphi: np.ndarray) -> list:
+    def compute_alphas_supports(
+        self, mu: Measure, varphi: np.ndarray, min_varphi: float
+    ) -> list:
         alphas = []
         all_supports_dict = (
             {}
         )  # {j: {alpha: {support indices:, distances:, intermediate support indices:, intermediate distances:}}}
-        for j, y_index in enumerate(mu_index.support):
-            supports_dict = self.compute_alphas_supports_y(y_index[0], varphi)
+        for j, y_index in enumerate(mu.support):
+            supports_dict = self.compute_alphas_supports_y(
+                y_index[0], varphi, min_varphi
+            )
             all_supports_dict[j] = supports_dict
             alphas += list(supports_dict.keys())
         alphas = np.unique(alphas)
@@ -174,7 +181,9 @@ class KR_PROX_GRAD:
             for i in range(mu_plus_size):
                 linear_term[i * mu_size + j] = (
                     self.wasserstein_weight
-                    * np.linalg.norm(mu.support[j] - mu_plus.support[i])
+                    * np.linalg.norm(
+                        self.domain[mu.support[j]] - self.domain[mu_plus.support[i]]
+                    )
                     - 1
                 )
         linear_term[-mu_plus_size:] = 1
@@ -234,10 +243,11 @@ class KR_PROX_GRAD:
             }
         return supports_per_j
 
-    def kr_subproblem(self, mu_index: Measure, varphi: np.ndarray) -> tuple:
+    def kr_subproblem_full(self, mu: Measure, varphi: np.ndarray) -> tuple:
+        # Deprecated version, where the alphas are tested in order
         plotting_dict = {}  # {j: [initial_point:, transported_to:]}
 
-        alphas, all_supports_dict = self.compute_alphas_supports(mu_index, varphi)
+        alphas, all_supports_dict = self.compute_alphas_supports(mu, varphi)
         alphas = np.append(alphas, np.inf)
         alpha_intervals = []
         for i, alpha in enumerate(alphas[:-1]):
@@ -257,7 +267,7 @@ class KR_PROX_GRAD:
                 supports_per_j = self.compute_supports_per_j(
                     alpha, alpha, all_supports_dict
                 )
-                kr_norm_lower = np.linalg.norm(mu_index.coefficients, ord=1)
+                kr_norm_lower = np.linalg.norm(mu.coefficients, ord=1)
                 number_transported_points_lower = 0
                 mu_kr_lower_support = []
                 mu_kr_lower_coefficients = []
@@ -278,7 +288,7 @@ class KR_PROX_GRAD:
                             and min_dist >= 1 / self.wasserstein_weight
                         ):
                             min_dist_index = support_indices[np.argmin(distances)]
-                            tau_j = mu_index.coefficients[j]
+                            tau_j = mu.coefficients[j]
                             kr_norm_lower += tau_j * (
                                 self.wasserstein_weight * min_dist - 1
                             )
@@ -366,7 +376,7 @@ class KR_PROX_GRAD:
                                                 transported_to.append(inner_point)
                                         if len(transported_to) > 1:
                                             plotting_dict[j] = {
-                                                "initial_point": mu_index.support[j],
+                                                "initial_point": mu.support[j],
                                                 "transported_to": np.array(
                                                     transported_to
                                                 ),
@@ -394,9 +404,238 @@ class KR_PROX_GRAD:
                     return mu_kr, kr_norm, number_transported_points, plotting_dict
         logging.warning("No KR solution found")
 
+    def kr_subproblem_step(
+        self,
+        alpha_lower: np.ndarray,
+        alpha_upper: np.ndarray,
+        mu: Measure,
+        varphi: np.ndarray,
+        x_varphi: int,
+        all_supports_dict: dict,
+        pivot_index: int,
+    ) -> tuple:
+        plotting_dict = {}  # {j: [initial_point:, transported_to:]}
+        success = False
+        mu_kr_upper = Measure()
+        mu_kr_lower = Measure()
+        number_transported_points_lower = 0
+        number_transported_points_upper = 0
+        mu_kr_lower_support = []
+        mu_kr_upper_support = []
+        mu_kr_lower_coefficients = []
+        mu_kr_upper_coefficients = []
+        kr_norm_lower = np.linalg.norm(mu.coefficients, ord=1)
+        kr_norm_upper = kr_norm_lower
+        if alpha_upper < 0:
+            return (
+                success,
+                mu_kr_lower,
+                np.inf,
+                number_transported_points_lower,
+                plotting_dict,
+            )
+        supports_per_j = self.compute_supports_per_j(
+            alpha_lower, alpha_upper, all_supports_dict
+        )
+
+        # Compute bounds on the norm
+        for j, inner_dict in supports_per_j.items():
+            support_indices = inner_dict["support_indices"]
+            reference_index = support_indices[0]
+            distances = inner_dict["distances"]
+            tau_j = mu.coefficients[j]
+            O_j = (
+                varphi[reference_index]
+                + self.wasserstein_weight * alpha_lower * distances[0]
+            )
+            if O_j >= alpha_lower * (1 + np.sign(alpha_lower) * self.tol):
+                pass
+            else:
+                min_dist = np.min(distances)
+                if not (
+                    abs(O_j - alpha_lower) < abs(alpha_lower * self.tol)
+                    and min_dist >= 1 / self.wasserstein_weight
+                ):
+                    min_dist_index = support_indices[np.argmin(distances)]
+                    kr_norm_lower += tau_j * (self.wasserstein_weight * min_dist - 1)
+                    mu_kr_lower_support.append([min_dist_index])
+                    mu_kr_lower_coefficients.append(tau_j)
+                    if min_dist > 0:
+                        number_transported_points_lower += 1
+                if alpha_upper == alpha_lower:
+                    max_dist = np.max(distances)
+                    if not (
+                        abs(O_j - alpha_lower) < abs(alpha_lower * self.tol)
+                        and max_dist <= 1 / self.wasserstein_weight
+                    ):
+                        max_dist_index = support_indices[np.argmax(distances)]
+                        kr_norm_upper += tau_j * (
+                            self.wasserstein_weight * max_dist - 1
+                        )
+                        mu_kr_upper_support.append([max_dist_index])
+                        mu_kr_upper_coefficients.append(tau_j)
+                        if max_dist > 0:
+                            number_transported_points_upper += 1
+
+        # Check if the bounds realize a solution
+        if alpha_lower == alpha_upper:
+            alpha = alpha_lower
+            if not pivot_index:  # alpha=-min varphi
+                if kr_norm_lower <= alpha * (1 + np.sign(alpha) * self.tol) / self.L:
+                    # There exists a solution, construct by choosing optimal u
+                    success = True
+                    kr_norm = kr_norm_lower
+                    mu_kr = Measure(
+                        support=mu_kr_lower_support,
+                        coefficients=mu_kr_lower_coefficients,
+                    )
+                    number_transported_points = number_transported_points_lower
+                    u = max(alpha / self.L - kr_norm, 0)
+                    x_bar = x_varphi
+                    mu_kr += Measure(support=[[x_bar]], coefficients=[u])
+                    return (
+                        success,
+                        mu_kr,
+                        alpha / self.L,
+                        number_transported_points,
+                        plotting_dict,
+                    )
+            else:
+                if (
+                    kr_norm_lower <= alpha * (1 + np.sign(alpha) * self.tol) / self.L
+                    and kr_norm_upper
+                    >= alpha * (1 - np.sign(alpha) * self.tol) / self.L
+                ):
+                    # There exists a valid solution: construct by convex combination
+                    success = True
+                    mu_kr_lower = Measure(
+                        support=mu_kr_lower_support,
+                        coefficients=mu_kr_lower_coefficients,
+                    )
+                    mu_kr_upper = Measure(
+                        support=mu_kr_upper_support,
+                        coefficients=mu_kr_upper_coefficients,
+                    )
+                    if abs(kr_norm_lower - alpha / self.L) < abs(alpha * self.tol):
+                        number_transported_points = number_transported_points_lower
+                    else:
+                        number_transported_points = number_transported_points_upper
+                    if abs(kr_norm_lower - kr_norm_upper) < abs(alpha * self.tol):
+                        return (
+                            success,
+                            mu_kr_lower,
+                            alpha / self.L,
+                            number_transported_points,
+                            plotting_dict,
+                        )
+                    else:
+                        theta = min(
+                            max(
+                                (alpha / self.L - kr_norm_upper)
+                                / (kr_norm_lower - kr_norm_upper),
+                                0,
+                            ),
+                            1,
+                        )
+                        mu_kr = mu_kr_lower * theta + mu_kr_upper * (1 - theta)
+                        if (
+                            self.transport_plot
+                            and theta > 0
+                            and theta < 1
+                            and number_transported_points
+                        ):
+                            # Prepare iterate for plotting
+                            for j, inner_dict in supports_per_j.items():
+                                if len(inner_dict["support_indices"]) > 1:
+                                    transported_to = []
+                                    for inner_index in inner_dict["support_indices"]:
+                                        inner_point = self.domain[inner_index]
+                                        if (
+                                            np.min(
+                                                np.linalg.norm(
+                                                    mu_kr.support - inner_point,
+                                                    axis=1,
+                                                )
+                                            )
+                                            == 0
+                                        ):
+                                            transported_to.append(inner_point)
+                                    if len(transported_to) > 1:
+                                        plotting_dict[j] = {
+                                            "initial_point": mu.support[j],
+                                            "transported_to": np.array(transported_to),
+                                        }
+                        return (
+                            success,
+                            mu_kr,
+                            alpha / self.L,
+                            number_transported_points,
+                            plotting_dict,
+                        )
+        else:
+            # (alpha-, alpha+) is a true interval
+            kr_norm = kr_norm_lower
+            mu_kr = Measure(
+                support=mu_kr_lower_support,
+                coefficients=mu_kr_lower_coefficients,
+            )
+            number_transported_points = number_transported_points_lower
+            if (
+                kr_norm <= alpha_upper * (1 + np.sign(alpha_upper) * self.tol) / self.L
+                and kr_norm
+                >= alpha_lower * (1 - np.sign(alpha_lower) * self.tol) / self.L
+            ):
+                success = True
+                return success, mu_kr, kr_norm, number_transported_points, plotting_dict
+        return (
+            success,
+            mu_kr_lower,
+            kr_norm_lower,
+            number_transported_points_lower,
+            plotting_dict,
+        )
+
+    def kr_subproblem(self, mu: Measure, varphi: np.ndarray) -> tuple:
+        x_varphi = np.argmin(varphi)
+        min_varphi = varphi[x_varphi]
+        alphas, all_supports_dict = self.compute_alphas_supports(mu, varphi, min_varphi)
+        alphas = np.append(alphas, np.inf)
+        alpha_intervals = []
+        for i, alpha in enumerate(alphas[:-1]):
+            alpha_intervals.append((alpha, alpha))
+            alpha_intervals.append((alpha, alphas[i + 1]))
+        lower_index = 0
+        upper_index = len(alpha_intervals) - 1
+        success = False
+        while not success:
+            pivot_index = math.ceil(0.5 * (upper_index + lower_index))
+            alpha_lower, alpha_upper = alpha_intervals[pivot_index]
+            success, mu_kr, kr_norm, number_transported_points, plotting_dict = (
+                self.kr_subproblem_step(
+                    alpha_lower,
+                    alpha_upper,
+                    mu,
+                    varphi,
+                    x_varphi,
+                    all_supports_dict,
+                    pivot_index,
+                )
+            )
+            if not success:
+                if (
+                    kr_norm
+                    >= alpha_upper * (1 + np.sign(alpha_upper) * self.tol) / self.L
+                ):
+                    lower_index = min(pivot_index + 1, upper_index)
+                elif (
+                    kr_norm
+                    <= alpha_lower * (1 - np.sign(alpha_lower) * self.tol) / self.L
+                ):
+                    upper_index = max(pivot_index - 1, lower_index)
+        return mu_kr, kr_norm, number_transported_points, plotting_dict
+
     def kr_step(
         self,
-        mu_index: Measure,
         mu: Measure,
         p_mu: Callable,
         varphi: np.array,
@@ -404,14 +643,12 @@ class KR_PROX_GRAD:
     ) -> tuple:
         plotting_dict = {}
         descent_condition = True
-        if not len(mu_index.coefficients):
+        if not len(mu.coefficients):
             # Reference measure is null
             position = np.argmin(varphi)
             coef = -varphi[position] / self.L
-            mu_plus_index = Measure(support=[[position]], coefficients=[coef])
-            mu_plus = Measure(support=[self.domain[position]], coefficients=[coef])
+            mu_plus = Measure(support=[[position]], coefficients=[coef])
             return (
-                mu_plus_index,
                 mu_plus,
                 descent_condition,
                 0,
@@ -419,16 +656,11 @@ class KR_PROX_GRAD:
                 plotting_dict,
             )
         else:
-            mu_plus_index, kr_norm, number_transported_points, plotting_dict = (
-                self.kr_subproblem(mu_index, varphi)
-            )
-            mu_plus = Measure(
-                support=self.domain[mu_plus_index.support.flatten()],
-                coefficients=mu_plus_index.coefficients,
+            mu_plus, kr_norm, number_transported_points, plotting_dict = (
+                self.kr_subproblem(mu, varphi)
             )
             if self.transport_plot and plotting_dict:
                 return (
-                    mu_plus_index,
                     mu_plus,
                     descent_condition,
                     number_transported_points,
@@ -436,10 +668,11 @@ class KR_PROX_GRAD:
                     plotting_dict,
                 )
 
-            if log_results:
-                kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
-                if np.abs(kr_norm - kr_norm_cvx) > 1e-6:
-                    logging.warning("Mismatch in KR norm computation")
+            # if log_results:
+            #     # Compute KR norm: slow. Only use for debugging
+            #     kr_norm_cvx = self.compute_kr_norm(mu_plus, mu)
+            #     if np.abs(kr_norm - kr_norm_cvx) > 1e-6:
+            #         logging.warning("Mismatch in KR norm computation")
 
             # Check KR descent:
             diff = self.j(mu_plus) - self.j(mu)
@@ -453,7 +686,6 @@ class KR_PROX_GRAD:
             if diff > kr_rhs or diff > 0:
                 descent_condition = False
             return (
-                mu_plus_index,
                 mu_plus,
                 descent_condition,
                 number_transported_points,
@@ -471,7 +703,6 @@ class KR_PROX_GRAD:
         exit_tol: float = 1e-10,
     ) -> tuple:
         mu = mu_0
-        mu_index = mu_0
         times = [0]
         supports = [len(mu.support)]
         objectives = [self.j(mu)]
@@ -479,27 +710,25 @@ class KR_PROX_GRAD:
         k = 1
         while time.perf_counter() - initial_time < max_time and k <= max_iter:
             p_mu = self.p(mu)
-            varphi = -p_mu(self.domain) + self.beta
+            varphi = -p_mu + self.beta
 
             # Line search
             self.L = max(self.L * self.L_reduce_factor, self.L_min)
             descent_condition = False
             while not descent_condition:
                 (
-                    mu_plus_index,
                     mu_plus,
                     descent_condition,
                     number_transported_points,
                     alpha,
                     plotting_dict,
-                ) = self.kr_step(mu_index, mu, p_mu, varphi, log_results)
+                ) = self.kr_step(mu, p_mu, varphi, log_results)
                 if not descent_condition:
                     self.L = min(self.L * self.L_increase_factor, self.L_max)
 
             if self.transport_plot and plotting_dict:
                 return mu, mu_plus, plotting_dict
 
-            mu_index = mu_plus_index.copy()
             mu = mu_plus.copy()
             if np.any(mu.coefficients <= -self.tol):
                 logging.warning("Negative coefficients")
