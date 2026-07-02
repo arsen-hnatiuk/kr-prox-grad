@@ -110,19 +110,6 @@ def generate_data(discretization_resolution: int) -> tuple:
 
 
 def experiment():
-    K_transpose, beta, target, L, j, p, discretization_domain = generate_data(100)
-    exp_kr_prox_grad = KR_PROX_GRAD(
-        j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=1
-    )
-    u_kr, objective_values_kr, times_kr, supports_kr = exp_kr_prox_grad.solve(
-        max_iter=1e7,
-        max_time=600,
-        log_results=True,
-        mu_0=Measure(),
-        optimum=0.2498978752594,
-    )
-    return
-
     logging.info("Running the algorithms on different meshes")
     mesh_sizes = [50, 100, 500]
     for discretization_resolution in mesh_sizes:
@@ -147,29 +134,29 @@ def experiment():
         if discretization_resolution == 100:
             optimum_100 = optimum
 
-        # L2 Prox Grad
-        logging.info(f"Computing L2 Prox Grad solution")
-        u_l2, objective_values_l2, times_l2, supports_l2 = exp_l2_prox_grad.solve(
-            max_iter=1e7, max_time=600, log_results=False, optimum=optimum
-        )
-        l2_residual = objective_values_l2[-1] - optimum
-        l2_time = times_l2[-1]
-        if discretization_resolution == 100:
-            times_l2_plot = times_l2
-            residuals_l2 = np.array(objective_values_l2) - optimum
-            supports_l2_plot = supports_l2
+        # # L2 Prox Grad
+        # logging.info(f"Computing L2 Prox Grad solution")
+        # u_l2, objective_values_l2, times_l2, supports_l2 = exp_l2_prox_grad.solve(
+        #     max_iter=1e7, max_time=600, log_results=False, optimum=optimum
+        # )
+        # l2_residual = objective_values_l2[-1] - optimum
+        # l2_time = times_l2[-1]
+        # if discretization_resolution == 100:
+        #     times_l2_plot = times_l2
+        #     residuals_l2 = np.array(objective_values_l2) - optimum
+        #     supports_l2_plot = supports_l2
 
-        # Frank-Wolfe
-        logging.info(f"Computing Frank-Wolfe solution")
-        u_fw, objective_values_fw, times_fw, supports_fw = exp_frank_wolfe.solve(
-            max_iter=1e7, max_time=600, log_results=False, optimum=optimum
-        )
-        fw_residual = objective_values_fw[-1] - optimum
-        fw_time = times_fw[-1]
-        if discretization_resolution == 100:
-            times_fw_plot = times_fw
-            residuals_fw = np.array(objective_values_fw) - optimum
-            supports_fw_plot = supports_fw
+        # # Frank-Wolfe
+        # logging.info(f"Computing Frank-Wolfe solution")
+        # u_fw, objective_values_fw, times_fw, supports_fw = exp_frank_wolfe.solve(
+        #     max_iter=1e7, max_time=600, log_results=False, optimum=optimum
+        # )
+        # fw_residual = objective_values_fw[-1] - optimum
+        # fw_time = times_fw[-1]
+        # if discretization_resolution == 100:
+        #     times_fw_plot = times_fw
+        #     residuals_fw = np.array(objective_values_fw) - optimum
+        #     supports_fw_plot = supports_fw
 
         # warm_start = False
         # if warm_start:
@@ -194,9 +181,9 @@ def experiment():
             residuals_kr = np.array(objective_values_kr) - optimum
             supports_kr_plot = supports_kr
 
-        logging.info(
-            f"Mesh size: {discretization_resolution}: L2 time {l2_time:.3E}, L2 residual {l2_residual}; FW time {fw_time:.3E}, FW residual {fw_residual}; KR time {kr_time:.3E}, KR residual {kr_residual}"
-        )
+        # logging.info(
+        #     f"Mesh size: {discretization_resolution}: L2 time {l2_time:.3E}, L2 residual {l2_residual}; FW time {fw_time:.3E}, FW residual {fw_residual}; KR time {kr_time:.3E}, KR residual {kr_residual}"
+        # )
 
         # with open(f"{results_dir}/6400iter.pkl", "wb") as file:
         #     pickle.dump(u_kr, file)
