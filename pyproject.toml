@@ -1,10 +1,10 @@
 [project]
 name = "kr-prox-grad"
 version = "2026.0.0"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 authors = [{ name = "Arsen Hnatiuk", email = "arsen.hnatiuk@hu-berlin.de" }]
 readme = "README.md"
 dynamic = ["dependencies"]
 
 [tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+dependencies = { file = ["environment.yml"] }

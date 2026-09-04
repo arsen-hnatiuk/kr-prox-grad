@@ -91,9 +91,14 @@ def generate_data(discretization_resolution: int) -> tuple:
     target = u_hat.duality_pairing(kernel)
     K_transpose = kernel(discretization_domain)
 
+    def forward_operator(u: Measure):
+        return u.duality_pairing(K_transpose)
+
     g = lambda u: beta * np.linalg.norm(u, ord=1)
     f = lambda y: 0.5 * np.sum((y - target) ** 2)
-    j = lambda u: f(u.duality_pairing(K_transpose)) + g(u.coefficients)
+
+    def j(u: Measure, Ku: list):
+        return f(Ku) + g(u.coefficients)
 
     kernel_norm_0 = np.max(np.linalg.norm(K_transpose, axis=1))
     kernel_norm_1 = np.max(
@@ -101,20 +106,19 @@ def generate_data(discretization_resolution: int) -> tuple:
     )
     L = max(kernel_norm_0, kernel_norm_1) ** 2
 
-    def p(u):
-        Ku = u.duality_pairing(K_transpose)
+    def p(Ku):
         inner = Ku - target
         return -K_transpose @ inner
 
-    return K_transpose, beta, target, L, j, p, discretization_domain
+    return K_transpose, beta, target, L, j, p, discretization_domain, forward_operator
 
 
 def experiment():
     logging.info("Running the algorithms on different meshes")
     mesh_sizes = [50, 100, 250]
     for discretization_resolution in mesh_sizes:
-        K_transpose, beta, target, L, j, p, discretization_domain = generate_data(
-            discretization_resolution
+        K_transpose, beta, target, L, j, p, discretization_domain, forward_operator = (
+            generate_data(discretization_resolution)
         )
         exp_pdap = PDAP(K_transpose=K_transpose, beta=beta, target=target)
         exp_l2_prox_grad = L2_PROX_GRAD(
@@ -122,7 +126,13 @@ def experiment():
         )
         exp_frank_wolfe = FRANK_WOLFE(target=target, K_matrix=K_transpose.T, beta=beta)
         exp_kr_prox_grad = KR_PROX_GRAD(
-            j=j, p=p, beta=beta, domain=discretization_domain, L=L, wasserstein_weight=1
+            j=j,
+            p=p,
+            beta=beta,
+            forward_operator=forward_operator,
+            domain=discretization_domain,
+            L=L,
+            wasserstein_weight=1,
         )
 
         # PDAP
@@ -158,12 +168,12 @@ def experiment():
             residuals_fw = np.array(objective_values_fw) - optimum
             supports_fw_plot = supports_fw
 
-        warm_start = False
-        if warm_start:
-            with open(f"{results_dir}/6400iter.pkl", "rb") as file:
-                u_0 = pickle.load(file)
-        else:
-            u_0 = Measure()
+        # warm_start = False
+        # if warm_start:
+        #     with open(f"{results_dir}/6400iter.pkl", "rb") as file:
+        #         u_0 = pickle.load(file)
+        # else:
+        #     u_0 = Measure()
 
         # KR Prox Grad
         logging.info(f"Computing KR Prox Grad solution")
@@ -190,8 +200,8 @@ def experiment():
         #     pickle.dump(u_kr, file)
 
     logging.info("Running KR prox grad using different wasserstein weights")
-    K_transpose, beta, target, L, j, p, discretization_domain = generate_data(
-        discretization_resolution=100
+    K_transpose, beta, target, L, j, p, discretization_domain, forward_operator = (
+        generate_data(discretization_resolution=100)
     )
     wasserstein_weights = [0.25, 0.75, 2.0]
     all_times_kr = []

@@ -19,6 +19,7 @@ class KR_PROX_GRAD:
         self,
         j: Callable,  # Objective
         p: Callable,  # Dual variable
+        forward_operator: Callable,
         beta: float,
         domain: np.ndarray,
         L: float,
@@ -29,6 +30,7 @@ class KR_PROX_GRAD:
         self.wasserstein_weight = wasserstein_weight
         self.j = j
         self.p = p
+        self.forward_operator = forward_operator
         self.beta = beta
         self.domain = domain
         self.L = L
@@ -637,6 +639,7 @@ class KR_PROX_GRAD:
     def kr_step(
         self,
         mu: Measure,
+        Kmu: list,
         p_mu: Callable,
         varphi: np.array,
         log_results: bool,
@@ -648,8 +651,10 @@ class KR_PROX_GRAD:
             position = np.argmin(varphi)
             coef = -varphi[position] / self.L
             mu_plus = Measure(support=[[position]], coefficients=[coef])
+            Kmu_plus = self.forward_operator(mu_plus)
             return (
                 mu_plus,
+                Kmu_plus,
                 descent_condition,
                 0,
                 coef * self.L,
@@ -659,9 +664,11 @@ class KR_PROX_GRAD:
             mu_plus, kr_norm, number_transported_points, plotting_dict = (
                 self.kr_subproblem(mu, varphi)
             )
+            Kmu_plus = self.forward_operator(mu_plus)
             if self.transport_plot and plotting_dict:
                 return (
                     mu_plus,
+                    Kmu_plus,
                     descent_condition,
                     number_transported_points,
                     kr_norm * self.L,
@@ -675,7 +682,7 @@ class KR_PROX_GRAD:
             #         logging.warning("Mismatch in KR norm computation")
 
             # Check KR descent:
-            diff = self.j(mu_plus) - self.j(mu)
+            diff = self.j(mu_plus, Kmu_plus) - self.j(mu, Kmu)
             kr_rhs = (
                 -mu_plus.duality_pairing(p_mu)
                 + self.beta * np.linalg.norm(mu_plus.coefficients, ord=1)
@@ -687,6 +694,7 @@ class KR_PROX_GRAD:
                 descent_condition = False
             return (
                 mu_plus,
+                Kmu_plus,
                 descent_condition,
                 number_transported_points,
                 kr_norm * self.L,
@@ -703,13 +711,20 @@ class KR_PROX_GRAD:
         exit_tol: float = 1e-10,
     ) -> tuple:
         mu = mu_0
+        Kmu = self.forward_operator(mu)
         times = [0]
         supports = [len(mu.support)]
-        objectives = [self.j(mu)]
+        objectives = [self.j(mu, Kmu)]
         initial_time = time.perf_counter()
         k = 1
         while time.perf_counter() - initial_time < max_time and k <= max_iter:
-            p_mu = self.p(mu)
+            p_mu = self.p(Kmu)
+
+            logging.getLogger().setLevel(logging.WARNING)  # Supress logging
+            plt.plot(self.domain.flatten(), p_mu)
+            plt.show()
+            logging.getLogger().setLevel(logging.INFO)  # Supress logging
+
             varphi = -p_mu + self.beta
 
             # Line search
@@ -718,25 +733,27 @@ class KR_PROX_GRAD:
             while not descent_condition:
                 (
                     mu_plus,
+                    Kmu_plus,
                     descent_condition,
                     number_transported_points,
                     alpha,
                     plotting_dict,
-                ) = self.kr_step(mu, p_mu, varphi, log_results)
+                ) = self.kr_step(mu, Kmu, p_mu, varphi, log_results)
                 if not descent_condition:
                     self.L = min(self.L * self.L_increase_factor, self.L_max)
 
             if self.transport_plot and plotting_dict:
-                return mu, mu_plus, plotting_dict
+                return mu, mu_plus, Kmu_plus, plotting_dict
 
             mu = mu_plus.copy()
+            Kmu = Kmu_plus
             if np.any(mu.coefficients <= -self.tol):
                 logging.warning("Negative coefficients")
 
             # update metrics
             times.append(time.perf_counter() - initial_time)
             supports.append(len(mu.support))
-            objectives.append(self.j(mu))
+            objectives.append(self.j(mu, Kmu))
 
             if objectives[-1] > objectives[-2] * (1 + self.tol):
                 logging.warning("Ascent observed")
